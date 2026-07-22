@@ -1,0 +1,121 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+    # Deploy only when a DEPLOYABLE input changes. A docs / skill-README /
+    # instruction push that builds no new artifact must not trigger a full
+    # build+deploy (which then fails on transient infra and re-alarms).
+    # `skills/**` IS included — MCP-hosted skills are served live by the running
+    # container, so a skill-body edit IS deployable. Manual redeploys: dispatch.
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "skills/**"
+      - ".github/workflows/deploy-aca.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: aca-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+
+    steps:
+      - name: Pre-flight — OIDC provisioned?
+        id: preflight
+        # A freshly-scaffolded MCP fires this deploy on its FIRST push, before
+        # Terraform has created the AZURE_* repo vars. azure/login then dies with
+        # "Not all values are present". Make that first run a green no-op with a
+        # clear message instead: provision with Terraform, then deploy (or
+        # trigger workflow_dispatch). Every step below is gated on this.
+        run: |
+          if [ -n "${{ vars.AZURE_CLIENT_ID }}" ]; then
+            echo "oidc_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "oidc_ready=false" >> "$GITHUB_OUTPUT"
+            echo "OIDC not provisioned yet (vars.AZURE_CLIENT_ID is empty) — run Terraform first, then re-run this deploy. Skipping."
+          fi
+
+      - name: Checkout
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tags
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update Container App image
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az containerapp update \
+              --name stromy-workflows-mcp \
+              --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+              --image ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+
+            FQDN=$(az containerapp show \
+              --name stromy-workflows-mcp \
+              --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+              --query properties.configuration.ingress.fqdn \
+              --output tsv)
+            HEALTH_URL="https://${FQDN}/health"
+
+            for attempt in $(seq 1 12); do
+              if curl --fail --silent --show-error --max-time 10 "$HEALTH_URL"; then
+                echo ""
+                echo "Health check passed: $HEALTH_URL"
+                exit 0
+              fi
+              echo "Health check attempt ${attempt}/12 failed; retrying in 10s..."
+              sleep 10
+            done
+
+            echo "ERROR: health check failed after 12 attempts: $HEALTH_URL" >&2
+            exit 1

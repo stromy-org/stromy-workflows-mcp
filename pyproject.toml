@@ -1,0 +1,52 @@
+[project]
+name = "stromy-workflows-mcp"
+version = "0.1.0"
+description = "Hosted workflow discovery, validation, execution, and lifecycle facade for Stromy"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "William Masquelier", email = "william.masquelier@stromy.com.au" }]
+# INDIVIDUALITY (ORG-PLAN-086 §2) — this list is PROJECT-OWNED. The template
+# renders only the minimal stable base set below and never edits these lines
+# again, so `copier update`'s 3-way merge replays your added deps cleanly. Add
+# deps with `uv add`; fleet-wide base deps arrive via a `_migrations` `uv add`,
+# never by the template rewriting this list.
+dependencies = [
+    "fastmcp>=3.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stromy_workflows_mcp"]
+
+# PEP 735 dependency-groups — installed by default with `uv sync` (no --extra
+# needed). ruff + pyright MUST live here: the org reusable ci-python.yml runs
+# `uv run ruff check` / `uv run pyright`, which fail to spawn if the tools are
+# not installed (a scaffold whose dev group omits them ships a red CI on day one).
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.8",
+    "pyright>=1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-v", "--tb=short", "--import-mode=importlib"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# Org standard (AGENTS.md): E,F,I,UP + ASYNC,B,PERF,S. Chrome region — the
+# 3-way merge updates it on `copier update`.
+select = ["E", "F", "I", "UP", "ASYNC", "B", "PERF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # `assert` is the pytest idiom

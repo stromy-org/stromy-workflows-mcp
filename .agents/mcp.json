@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "stromy-workflows-mcp": {
+      "transport": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "stromy_workflows_mcp.server"],
+      "env": {
+        "FASTMCP_TRANSPORT": "stdio"
+      }
+    },
+    "stromy-workflows-mcp-http": {
+      "transport": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}

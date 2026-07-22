@@ -1,0 +1,21 @@
+{
+  "_comment": "Rendered from .agents/mcp.json by scripts/render-mcp.py \u2014 DO NOT EDIT BY HAND. Edit .agents/mcp.json and re-run.",
+  "mcpServers": {
+    "stromy-workflows-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "stromy_workflows_mcp.server"
+      ],
+      "env": {
+        "FASTMCP_TRANSPORT": "stdio"
+      }
+    },
+    "stromy-workflows-mcp-http": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}

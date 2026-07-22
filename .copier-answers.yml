@@ -1,0 +1,14 @@
+# Changes here will be overwritten by Copier; DO NOT edit manually.
+_commit: v0.9.3-2-g99875c6
+_src_path: gh:stromy-org/fastmcp-template
+author_email: william.masquelier@stromy.com.au
+author_name: William Masquelier
+azure_region: northeurope
+description: Hosted workflow discovery, validation, execution, and lifecycle facade
+    for Stromy
+enable_oauth: true
+github_owner: stromy-org
+github_repo: stromy-workflows-mcp
+module_slug: stromy_workflows_mcp
+package_slug: stromy-workflows-mcp
+project_name: Stromy Workflows MCP
