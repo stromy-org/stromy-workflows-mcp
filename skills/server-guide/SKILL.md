@@ -48,3 +48,13 @@ skills/
 No registration needed — the `fs_read` / `fs_list` tools serve any file under
 `skills/`. Discover skills with `fs_list("skills")`, then load one with
 `fs_read("skills/<name>/SKILL.md")`.
+
+<!-- cold-start:start -->
+## If this server is slow to respond
+
+This server scales to zero to save cost, so the first call after an idle period wakes the container — typically ~10–30s, and up to ~1–2 min for a heavier image (media / browser tier). If `fs_read` or a tool errors with unavailable/timeout:
+
+1. Tell the user the server is starting, then retry the same call — the call itself wakes the container.
+2. Retry with a short backoff up to ~3 times.
+3. Only if it is still unreachable after retries, STOP and report. Never downgrade to a local or base skill just to "get something out".
+<!-- cold-start:end -->
