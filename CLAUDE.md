@@ -21,6 +21,9 @@ Hosted workflow discovery, validation, execution, and lifecycle facade for Strom
 uv sync                        # install dependencies
 uv run python -m stromy_workflows_mcp.server    # run the server (HTTP on :8000)
 uv run pytest                  # run tests
+uv run ruff check              # lint
+uv run pyright                 # strict type check
+python3 scripts/sync_contracts.py --source-root ../../Stromy --check
 uv add <package>               # add a dependency
 uv run python scripts/sync_skill_stubs.py --server stromy-workflows-mcp-http  # regen PRE-MANIFEST local stubs (org-owned stubs are left as-is)
 uv run python scripts/sync_skill_stubs.py --server stromy-workflows-mcp-http --check  # local check: exit 1 if a pre-manifest stub is stale (NOT run in CI)
@@ -50,6 +53,19 @@ tests/test_chrome.py   CHROME — framework-contract regression tests (fs path-j
 tests/test_auth.py     CHROME — OAuth provider builder tests
 
 ```
+
+## Workflow facade invariants
+
+- This MCP is client-agnostic. Client identity comes only from verified Entra
+  app roles (`client.<slug>` or `operator`), never from tool arguments alone.
+- Stromy owns the run-registry schema. This repo issues DML only and must never
+  introduce schema DDL. `/health` fails on an unsupported `schema_meta.version`.
+- Caller config is persisted in Postgres and must never enter the ACA Job start
+  template. The template carries server-controlled values plus `--run-id` only.
+- Contracts are authored in Stromy and generated into
+  `components/resources/contracts/` by `scripts/sync_contracts.py`; never edit
+  the generated JSON files by hand.
+- Resume replays the exact `job_template_json` stored at run creation.
 
 ## Adding a component
 
@@ -120,7 +136,8 @@ Production runs on Azure Container Apps. The deploy path is:
 - `Dockerfile` (multi-stage; runtime is `python:3.13-slim` + `uv sync --frozen`)
 - `.github/workflows/deploy-aca.yml` builds on push to `main`, pushes to `ghcr.io/<owner>/<repo>`, then runs `az containerapp update`
 - ACA pulls the new image and rolls the revision
-- Liveness probe hits `GET /health` (defined in `src/stromy_workflows_mcp/server.py` via `@mcp.custom_route`)
+- Readiness probe hits `GET /health`; `server_hooks.py` replaces the template's
+  generic route with a registry schema/version check
 - Production transport is `streamable-http` on port 8080; `min-replicas=0` (scale-to-zero)
 
 Infrastructure provisioning: run `bash scripts/register-terraform.sh` to open a PR in `stromy-org/terraform` that adds `mcp-servers/stromy-workflows-mcp.json`. See `azure_aca/README.md` for details. Don't invent a different deploy path; extend this one.

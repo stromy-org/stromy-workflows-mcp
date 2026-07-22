@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Hosted weekly intelligence sourcing and website-draft contract.",
+  "properties": {
+    "delivery": {
+      "properties": {
+        "base_branch": {
+          "type": "string",
+          "x-pinned": "main",
+          "x-tier": 3
+        },
+        "content_dir": {
+          "type": "string",
+          "x-pinned": "src/content/blog",
+          "x-tier": 3
+        },
+        "repo": {
+          "type": "string",
+          "x-pinned": "stromy-org/stromy-website",
+          "x-tier": 3
+        }
+      },
+      "type": "object"
+    },
+    "draft": {
+      "properties": {
+        "author": {
+          "default": "Stromy Intelligence",
+          "type": "string",
+          "x-tier": 2
+        },
+        "category": {
+          "default": "intel-reports",
+          "type": "string",
+          "x-tier": 2
+        },
+        "cover_image": {
+          "type": "string",
+          "x-pinned": "./_covers/intel-default.png",
+          "x-tier": 3
+        },
+        "default_tags": {
+          "default": [
+            "governance",
+            "public affairs"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-tier": 2
+        },
+        "max_tokens": {
+          "type": "integer",
+          "x-pinned": 8000,
+          "x-tier": 3
+        },
+        "model_tier": {
+          "type": "string",
+          "x-pinned": "smart",
+          "x-tier": 3
+        },
+        "region": {
+          "default": "global",
+          "type": "string",
+          "x-tier": 2
+        }
+      },
+      "type": "object"
+    },
+    "dry_run": {
+      "type": "boolean",
+      "x-pinned": false,
+      "x-tier": 3
+    },
+    "output_folder": {
+      "type": "string",
+      "x-pinned": "/tmp/weekly-intel",
+      "x-tier": 3
+    },
+    "research": {
+      "properties": {
+        "blocked_source_agents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-pinned": [
+            "academic_sourcing"
+          ],
+          "x-tier": 3
+        },
+        "desired_source_families": {
+          "default": [
+            "media",
+            "web"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-tier": 2
+        },
+        "enable_refinement": {
+          "type": "boolean",
+          "x-pinned": false,
+          "x-tier": 3
+        },
+        "geography": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-tier": 2
+        },
+        "max_missions": {
+          "type": "integer",
+          "x-pinned": 4,
+          "x-tier": 3
+        },
+        "model_tier": {
+          "type": "string",
+          "x-pinned": "smart",
+          "x-tier": 3
+        },
+        "organization": {
+          "default": "",
+          "type": "string",
+          "x-tier": 2
+        },
+        "request_text": {
+          "minLength": 1,
+          "type": "string",
+          "x-ask": "What topic and evidence brief should this intelligence run investigate?",
+          "x-tier": 1
+        },
+        "time_horizon": {
+          "default": "1_month",
+          "type": "string",
+          "x-tier": 2
+        },
+        "total_document_budget": {
+          "type": "integer",
+          "x-pinned": 40,
+          "x-tier": 3
+        }
+      },
+      "type": "object"
+    }
+  },
+  "workflow": "weekly_intel_workflow"
+}
