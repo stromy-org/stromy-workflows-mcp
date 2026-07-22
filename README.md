@@ -4,6 +4,23 @@ Hosted workflow discovery, validation, execution, and lifecycle facade for Strom
 
 Built with [FastMCP 3.0](https://gofastmcp.com) and managed with [uv](https://docs.astral.sh/uv/).
 
+The facade is deliberately thin and client-agnostic: verified Entra app roles
+scope every run; Stromy owns the Postgres schema and execution worker; this
+service performs DML only, validates tiered contracts, and starts ACA Job
+executions with server-controlled templates.
+
+## Tools
+
+- `list_workflows` / `describe_workflow` / `validate_config`
+- `start_run` / `run_status` / `list_runs`
+- `resume_run` / `cancel_run` / `get_results`
+- `fs_list` / `fs_read` for the hosted `wf-*` skills
+
+Tier 1 keys are interview questions, tier 2 keys are caller-overridable
+defaults, and tier 3 keys are provider-locked. Client tokens cannot see or set
+tier 3. Run ownership comes only from verified `client.<slug>` roles; a
+chat-supplied slug can narrow scope but never grant it.
+
 ## Setup
 
 ```bash
@@ -34,7 +51,8 @@ components/
 ├── resources/             @resource functions, auto-discovered
 └── prompts/               @prompt functions, auto-discovered
 skills/
-└── server-guide/          Example skill, served via the fs_read/fs_list tools
+└── server-guide/          Skill served via the fs_read/fs_list tools
+components/resources/contracts/  Generated from Stromy's authored contracts
 tests/                     pytest + in-memory FastMCP Client
 ```
 
@@ -58,7 +76,15 @@ Drop a new folder into `skills/` with a `SKILL.md` — no registration needed.
 
 ```bash
 uv run pytest
+uv run ruff check
+uv run pyright
+python3 scripts/sync_contracts.py --source-root ../../Stromy --check
 ```
+
+`GET /health` is a readiness check, not a cosmetic liveness response. It returns
+503 when Postgres is unreachable or `schema_meta.version` is outside the
+facade's supported range. Deploy order is therefore Stromy migration first,
+facade second.
 
 ## Use with Claude Code
 

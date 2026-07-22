@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Curated hosted surface for stakeholder acceptance analysis. Operator-local configuration remains broader.",
+  "properties": {
+    "brand_slug": {
+      "default": "stromy",
+      "description": "Brand overlay used for report and deliverable rendering.",
+      "type": "string",
+      "x-tier": 2
+    },
+    "decision_summary": {
+      "description": "The decision, proposal, or change whose stakeholder acceptance should be analysed.",
+      "minLength": 1,
+      "type": "string",
+      "x-ask": "What decision or proposed change should the stakeholder analysis assess?",
+      "x-tier": 1
+    },
+    "deliverable_author_max_tokens": {
+      "type": "integer",
+      "x-pinned": 16000,
+      "x-tier": 3
+    },
+    "deliverable_formats": {
+      "default": [
+        "pdf-hd"
+      ],
+      "items": {
+        "enum": [
+          "pdf",
+          "pdf-hd",
+          "pptx",
+          "pptx-hd",
+          "html-deck"
+        ],
+        "type": "string"
+      },
+      "type": "array",
+      "x-tier": 2
+    },
+    "deliverable_renderer": {
+      "type": "string",
+      "x-pinned": "direct",
+      "x-tier": 3
+    },
+    "inputs_md_folder": {
+      "description": "Server-side folder containing source material for the analysis.",
+      "type": "string",
+      "x-ask": "Which uploaded or server-side evidence folder should the analysis use?",
+      "x-tier": 1
+    },
+    "report_output_formats": {
+      "default": [
+        "html",
+        "pdf"
+      ],
+      "items": {
+        "enum": [
+          "html",
+          "pdf"
+        ],
+        "type": "string"
+      },
+      "type": "array",
+      "x-tier": 2
+    },
+    "report_title": {
+      "default": "Stakeholder Acceptance Analysis",
+      "description": "Optional report title override.",
+      "type": "string",
+      "x-tier": 2
+    },
+    "run_chunker": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_deep_research": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_deliverable_generation": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_document_loading": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_orchestrated_sourcing": {
+      "type": "boolean",
+      "x-pinned": false,
+      "x-tier": 3
+    },
+    "run_probability_estimator": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_questionnaire_generator": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_relevance_filter": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_report_generation": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_report_precompute": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_report_rendering": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_review_questionnaire": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_scoring": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    }
+  },
+  "workflow": "stakeholder_analysis_workflow"
+}

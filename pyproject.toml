@@ -11,7 +11,11 @@ authors = [{ name = "William Masquelier", email = "william.masquelier@stromy.com
 # deps with `uv add`; fleet-wide base deps arrive via a `_migrations` `uv add`,
 # never by the template rewriting this list.
 dependencies = [
+    "azure-identity>=1.19,<2",
     "fastmcp>=3.0.0",
+    "httpx>=0.28,<1",
+    "jsonschema>=4.23,<5",
+    "psycopg[binary]>=3.2,<4",
     "pydantic-settings>=2.0.0",
 ]
 
