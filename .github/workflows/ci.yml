@@ -1,5 +1,8 @@
 name: CI
-# CI runs ruff (E,F,I,UP,ASYNC,B,PERF,S) + pyright + pytest via the org reusable workflow.
+
+# This repository is public while stromy-org is private. GitHub does not allow
+# a public caller to load a reusable workflow from a private repository, so the
+# small Python gate is intentionally self-contained here.
 
 on:
   push:
@@ -8,10 +11,28 @@ on:
     branches: [main]
 
 jobs:
-  python-ci:
-    uses: stromy-org/stromy-org/.github/workflows/ci-python.yml@main
-    with:
-      source_package: "src/stromy_workflows_mcp"
-    # Forward the org stromy-ci App secrets (CI_APP_ID / CI_APP_PRIVATE_KEY)
-    # so the reusable workflow can clone private deps. No-op if absent.
-    secrets: inherit
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv python install 3.13
+      - run: uv sync
+      - name: Lint
+        run: uv run ruff check
+      - name: Type check
+        run: uv run pyright src/stromy_workflows_mcp
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv python install 3.13
+      - run: uv sync
+      - name: Tests
+        run: uv run pytest
