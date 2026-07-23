@@ -63,14 +63,20 @@ def test_verified_client_roles_are_a_union_and_default_deny() -> None:
     assert not denied.client_slugs
 
 
-def _run(run_id: str, *, config: dict, template: dict) -> registry.Run:
+def _run(
+    run_id: str,
+    *,
+    config: dict,
+    template: dict,
+    client_slug: str = "dukestrategies",
+) -> registry.Run:
     now = datetime.now(UTC)
     return registry.Run(
         run_id=run_id,
         workflow="stakeholder_analysis_workflow",
         thread_id=run_id,
         status="queued",
-        client_slug="dukestrategies",
+        client_slug=client_slug,
         config_json=config,
         image_tag="runner:test",
         job_template_json=template,
@@ -81,6 +87,29 @@ def _run(run_id: str, *, config: dict, template: dict) -> registry.Run:
         artifacts_json=None,
         idempotency_key=None,
     )
+
+
+def test_client_scope_filters_lists_and_denies_cross_tenant_reads(monkeypatch) -> None:
+    duke = _run("duke-run", config={}, template={})
+    stromy = _run("stromy-run", config={}, template={}, client_slug="stromy")
+    scope = CallerScope(frozenset({"dukestrategies"}))
+
+    @contextmanager
+    def fake_connect():
+        yield object()
+
+    def fake_list_runs(conn, *, client_slugs, limit):
+        del conn, limit
+        assert client_slugs == ["dukestrategies"]
+        return [duke]
+
+    monkeypatch.setattr(registry, "connect", fake_connect)
+    monkeypatch.setattr(registry, "list_runs", fake_list_runs)
+    assert [item["run_id"] for item in service.list_runs(scope)] == ["duke-run"]
+
+    monkeypatch.setattr(registry, "get_run", lambda conn, run_id: stromy)
+    with pytest.raises(PermissionError, match="outside the caller's client scope"):
+        service.run_status("stromy-run", scope)
 
 
 @pytest.mark.asyncio
