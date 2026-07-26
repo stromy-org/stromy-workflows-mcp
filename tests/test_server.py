@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from stromy_workflows_mcp import registry, server, service
+from stromy_workflows_mcp import aca, registry, server, service
 from stromy_workflows_mcp.aca import PreparedJob
 from stromy_workflows_mcp.config import settings
 from stromy_workflows_mcp.contracts import CallerRole, ConfigRejected, load_contract
@@ -147,6 +147,112 @@ async def test_template_injection_guard(monkeypatch) -> None:
     assert sentinel not in json.dumps(captured["template"])
     assert sentinel not in json.dumps(captured["started_template"])
     assert result["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_prepare_emits_a_top_level_job_execution_template(monkeypatch) -> None:
+    """ARM's ``jobs/start`` takes a JobExecutionTemplate, not the job's own template.
+
+    Regression for the live 400 seen on 2026-07-26:
+    ``Unknown properties template in StartJobExecutionTemplate are not supported``.
+    The body must be ``{"containers": [...]}`` at the top level, carrying only the
+    keys the execution schema accepts — ``probes``/``volumes``/``volumeMounts`` are
+    job-template members that ARM rejects here.
+    """
+    job_template = {
+        "containers": [
+            {
+                "name": "stromy-runner",
+                "image": "ghcr.io/stromy-org/stromy-runner:sha-deadbeef",
+                "env": [{"name": "STROMY_PG_DSN", "secretRef": "stromy-pg-dsn", "value": ""}],
+                "resources": {"cpu": 1, "memory": "2Gi"},
+                "probes": [],
+                "volumeMounts": [{"volumeName": "v", "mountPath": "/mnt"}],
+            }
+        ],
+        "initContainers": None,
+        "volumes": [],
+    }
+
+    class FakeResponse:
+        is_error = False
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"properties": {"template": job_template}}
+
+    class FakeHttpClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *args, **kwargs):
+            del args, kwargs
+            return FakeResponse()
+
+    monkeypatch.setattr(aca.settings, "azure_subscription_id", "sub-id")
+    monkeypatch.setattr(aca, "DefaultAzureCredential", lambda *a, **k: object())
+    monkeypatch.setattr(aca.httpx, "AsyncClient", lambda *a, **k: FakeHttpClient())
+    monkeypatch.setattr(
+        aca.AcaJobClient, "_headers", lambda self: _immediate({"Authorization": "Bearer x"})
+    )
+
+    prepared = await aca.AcaJobClient().prepare("run-123")
+
+    # Top-level JobExecutionTemplate — never a {"template": ...} envelope.
+    assert set(prepared.template) == {"containers"}
+    container = prepared.template["containers"][0]
+    assert set(container) == {"image", "name", "env", "resources", "command", "args"}
+    assert container["args"] == ["-m", "stromy.runtime.worker", "--run-id", "run-123"]
+    # secretRef env survives the override, or the run starts without its DSN.
+    assert container["env"] == job_template["containers"][0]["env"]
+    assert prepared.image_tag == "ghcr.io/stromy-org/stromy-runner:sha-deadbeef"
+
+
+@pytest.mark.asyncio
+async def test_start_posts_the_template_unwrapped(monkeypatch) -> None:
+    """The POST body IS the JobExecutionTemplate — no ``{"template": ...}`` envelope."""
+    template = {"containers": [{"name": "runner", "image": "runner:test"}]}
+    sent: dict[str, object] = {}
+
+    class FakeResponse:
+        is_error = False
+        content = b"{}"
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"name": "exec-1"}
+
+    class FakeHttpClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, *, params, headers, json):
+            sent.update(url=url, params=params, json=json)
+            return FakeResponse()
+
+    monkeypatch.setattr(aca.settings, "azure_subscription_id", "sub-id")
+    monkeypatch.setattr(aca, "DefaultAzureCredential", lambda *a, **k: object())
+    monkeypatch.setattr(aca.httpx, "AsyncClient", lambda *a, **k: FakeHttpClient())
+    monkeypatch.setattr(
+        aca.AcaJobClient, "_headers", lambda self: _immediate({"Authorization": "Bearer x"})
+    )
+
+    assert await aca.AcaJobClient().start(template) == {"name": "exec-1"}
+    body = sent["json"]
+    assert isinstance(body, dict)
+    assert body == template
+    assert "template" not in body
+    assert str(sent["url"]).endswith("/start")
+
+
+async def _immediate(value):
+    return value
 
 
 def test_health_fails_loudly_on_schema_mismatch(monkeypatch) -> None:
