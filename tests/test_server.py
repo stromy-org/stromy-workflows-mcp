@@ -10,10 +10,15 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from stromy_workflows_mcp import aca, registry, server, service
+from stromy_workflows_mcp import aca, entitlements, registry, server, service
 from stromy_workflows_mcp.aca import PreparedJob
 from stromy_workflows_mcp.config import settings
-from stromy_workflows_mcp.contracts import CallerRole, ConfigRejected, load_contract
+from stromy_workflows_mcp.contracts import (
+    CallerRole,
+    ConfigRejected,
+    ContractError,
+    load_contract,
+)
 from stromy_workflows_mcp.scoping import CallerScope, resolve_scope
 
 
@@ -110,6 +115,133 @@ def test_client_scope_filters_lists_and_denies_cross_tenant_reads(monkeypatch) -
     monkeypatch.setattr(registry, "get_run", lambda conn, run_id: stromy)
     with pytest.raises(PermissionError, match="outside the caller's client scope"):
         service.run_status("stromy-run", scope)
+
+
+def _entitlements(monkeypatch, table: dict[str, frozenset[str]]) -> None:
+    monkeypatch.setattr(entitlements, "load_entitlements", lambda: table)
+
+
+def _broken_entitlements(monkeypatch) -> None:
+    def explode() -> dict[str, frozenset[str]]:
+        raise entitlements.EntitlementError("registry is corrupt")
+
+    monkeypatch.setattr(entitlements, "load_entitlements", explode)
+
+
+def test_list_workflows_filters_to_entitled_workflows(monkeypatch) -> None:
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    scope = CallerScope(frozenset({"dukestrategies"}))
+    assert [item["workflow"] for item in service.list_workflows(scope)] == [
+        "stakeholder_analysis_workflow"
+    ]
+    # The operator still sees the whole catalog, including the operator-only one.
+    operator = CallerScope(frozenset(), unrestricted=True)
+    assert "weekly_intel_workflow" in {
+        item["workflow"] for item in service.list_workflows(operator)
+    }
+
+
+def test_unlisted_workflow_defaults_to_deny(monkeypatch) -> None:
+    _entitlements(monkeypatch, {})
+    scope = CallerScope(frozenset({"dukestrategies"}))
+    assert service.list_workflows(scope) == []
+    with pytest.raises(ContractError):
+        service.describe_workflow("weekly_intel_workflow", scope)
+
+
+def test_describe_uses_the_union_of_the_callers_roles(monkeypatch) -> None:
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    scope = CallerScope(frozenset({"dukestrategies", "amaris"}))
+    described = service.describe_workflow("stakeholder_analysis_workflow", scope)
+    assert described["workflow"] == "stakeholder_analysis_workflow"
+
+
+def test_unknown_and_unentitled_workflows_are_indistinguishable(monkeypatch) -> None:
+    """A client must not be able to enumerate the catalog by diffing error strings."""
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    scope = CallerScope(frozenset({"amaris"}))
+    with pytest.raises(ContractError) as unentitled:
+        service.describe_workflow("stakeholder_analysis_workflow", scope)
+    with pytest.raises(ContractError) as nonexistent:
+        service.describe_workflow("no_such_workflow", scope)
+    assert str(unentitled.value) == "unknown workflow 'stakeholder_analysis_workflow'"
+    assert str(nonexistent.value) == "unknown workflow 'no_such_workflow'"
+
+
+def test_client_fails_closed_when_the_registry_is_unreadable(monkeypatch) -> None:
+    _broken_entitlements(monkeypatch)
+    scope = CallerScope(frozenset({"dukestrategies"}))
+    assert service.list_workflows(scope) == []
+    with pytest.raises(ContractError):
+        service.describe_workflow("stakeholder_analysis_workflow", scope)
+
+
+def test_operator_bypasses_an_unreadable_registry(monkeypatch) -> None:
+    """A bad deploy must never lock the operator out of their own estate."""
+    _broken_entitlements(monkeypatch)
+    operator = CallerScope(frozenset(), unrestricted=True)
+    assert {item["workflow"] for item in service.list_workflows(operator)} == {
+        "stakeholder_analysis_workflow",
+        "weekly_intel_workflow",
+    }
+    assert service.describe_workflow("weekly_intel_workflow", operator)
+
+
+def test_fs_roots_never_widen_beyond_skills() -> None:
+    """The skills jail has no CallerScope awareness (fs_tools.py).
+
+    Widening it to ``components`` would hand every contract and the entitlements
+    registry itself to any authenticated caller of any role.
+    """
+    assert settings.fs_roots == ["skills"]
+
+
+@pytest.mark.asyncio
+async def test_start_run_denies_a_non_entitled_resolved_owner(monkeypatch) -> None:
+    """The escalation regression: entitlement follows the run OWNER, not the union.
+
+    A caller holding both ``client.dukestrategies`` and ``client.amaris``, entitled
+    only via Duke, must not be able to start a run *owned by amaris*. ``validate_config``
+    is union-scoped and cannot catch this, so ``start_run`` checks the resolved owner.
+    """
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    monkeypatch.setattr(service, "_persist_start", lambda **kwargs: pytest.fail("run persisted"))
+    scope = CallerScope(frozenset({"dukestrategies", "amaris"}))
+
+    with pytest.raises(PermissionError, match="not entitled to workflow"):
+        await service.start_run(
+            "stakeholder_analysis_workflow",
+            {"decision_summary": "x", "inputs_md_folder": "/inputs/amaris"},
+            {"client_slug": "amaris"},
+            None,
+            scope,
+        )
+
+
+@pytest.mark.asyncio
+async def test_start_run_denies_an_operator_only_workflow(monkeypatch) -> None:
+    _entitlements(monkeypatch, {"weekly_intel_workflow": frozenset()})
+    monkeypatch.setattr(service, "_persist_start", lambda **kwargs: pytest.fail("run persisted"))
+    with pytest.raises(ContractError):
+        await service.start_run(
+            "weekly_intel_workflow",
+            {"research": {"request_text": "x"}},
+            {"client_slug": "dukestrategies"},
+            None,
+            CallerScope(frozenset({"dukestrategies"})),
+        )
 
 
 @pytest.mark.asyncio

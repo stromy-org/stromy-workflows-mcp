@@ -7,7 +7,8 @@ from typing import Any, Protocol
 
 from . import registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
-from .contracts import CallerRole, list_contracts, load_contract
+from .contracts import CallerRole, load_contract
+from .entitlements import require_entitled, require_visible, visible_workflows
 from .scoping import CallerScope, require_client
 
 
@@ -30,14 +31,16 @@ def _require_run_scope(run: registry.Run | None, scope: CallerScope) -> registry
 
 
 def list_workflows(scope: CallerScope) -> list[dict[str, Any]]:
-    return [load_contract(name).describe(_role(scope)) for name in list_contracts()]
+    return [load_contract(name).describe(_role(scope)) for name in visible_workflows(scope)]
 
 
 def describe_workflow(name: str, scope: CallerScope) -> dict[str, Any]:
+    require_visible(name, scope)
     return load_contract(name).describe(_role(scope))
 
 
 def validate_config(name: str, config: dict[str, Any], scope: CallerScope) -> dict[str, Any]:
+    require_visible(name, scope)
     return load_contract(name).validate(config, _role(scope))
 
 
@@ -81,6 +84,10 @@ async def start_run(
 ) -> dict[str, Any]:
     context = client_context or {}
     client_slug = require_client(scope, context.get("client_slug"))
+    # Checked against the RESOLVED owner, not the caller's union of roles: a caller
+    # holding two client roles must not start a run owned by the unentitled one.
+    # validate_config's own gate is union-scoped and cannot make this distinction.
+    require_entitled(name, client_slug, scope)
     normalized = validate_config(name, config, scope)
     run_id = registry.new_run_id()
     client = job_client or AcaJobClient()

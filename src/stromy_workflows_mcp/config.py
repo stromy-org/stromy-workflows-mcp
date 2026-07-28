@@ -14,6 +14,7 @@ class Settings(SettingsBase):
     fs_roots: list[str] = ["skills"]
     stromy_pg_dsn: str = ""
     contracts_dir: str = "components/resources/contracts"
+    entitlements_file: str = "components/resources/entitlements.json"
     client_role_prefix: str = "client."
     operator_role: str = "operator"
     client_scope_map: str = ""

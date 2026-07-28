@@ -21,6 +21,20 @@ defaults, and tier 3 keys are provider-locked. Client tokens cannot see or set
 tier 3. Run ownership comes only from verified `client.<slug>` roles; a
 chat-supplied slug can narrow scope but never grant it.
 
+Authorization has four layers, each answering a different question:
+
+| Layer | Question | Where |
+|---|---|---|
+| Authentication | who are you? | Entra app roles, `scoping.resolve_scope` (default-deny) |
+| Workflow entitlement | which workflows are yours? | `components/resources/entitlements.json` |
+| Run tenancy | whose runs are these? | `service._require_run_scope` |
+| Config tiering | which fields may you set? | `x-tier` in the contract |
+
+Entitlement is default-deny: a workflow absent from the registry, or listed with
+`"clients": []`, is operator-only. Granting one is a reviewed PR to this repo
+followed by a redeploy — `components/` is baked into the image, so it is not a
+live flag flip. Grant/revoke runbook: [`references/entitlements.md`](references/entitlements.md).
+
 ## Setup
 
 ```bash
