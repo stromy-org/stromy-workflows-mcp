@@ -65,6 +65,18 @@ tests/test_auth.py     CHROME — OAuth provider builder tests
 - Contracts are authored in Stromy and generated into
   `components/resources/contracts/` by `scripts/sync_contracts.py`; never edit
   the generated JSON files by hand.
+- Workflow entitlement is default-deny and authored HERE, in
+  `components/resources/entitlements.json` — the one file in `components/resources/`
+  that is NOT generated. A workflow absent from it, or listed with `"clients": []`,
+  is operator-only. `scripts/check_entitlements.py` fails CI when a contract has no
+  explicit entry, so a new workflow cannot land without an exposure decision.
+- Entitlement follows the RESOLVED run owner, never the caller's union of roles.
+  `start_run` calls `require_entitled(name, client_slug, scope)` itself; delegating
+  that to `validate_config` reopens a cross-tenant escalation (a caller with two
+  client roles starting a run owned by the unentitled one).
+- `fs_roots` stays `["skills"]`. `fs_tools.py` has no `CallerScope` awareness, so
+  widening the jail to `components` would serve every contract and the entitlements
+  registry itself to any authenticated caller of any role.
 - Resume replays the exact `job_template_json` stored at run creation.
 
 ## Adding a component
