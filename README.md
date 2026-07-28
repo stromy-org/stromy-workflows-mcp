@@ -33,7 +33,7 @@ Authorization has four layers, each answering a different question:
 Entitlement is default-deny: a workflow absent from the registry, or listed with
 `"clients": []`, is operator-only. Granting one is a reviewed PR to this repo
 followed by a redeploy — `components/` is baked into the image, so it is not a
-live flag flip. See `references/entitlements.md` in stromy-org for the runbook.
+live flag flip. Grant/revoke runbook: [`references/entitlements.md`](references/entitlements.md).
 
 ## Setup
 
