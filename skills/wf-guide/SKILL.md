@@ -156,7 +156,7 @@ reported explicitly; the guide never treats silence or a queued run as completio
 
 | Skill | What it does |
 |---|---|
-| `wf-stakeholder-analysis` | Run a hosted stakeholder-acceptance analysis from a client plugin: gather the decision and evidence settings, validate the safe workflow configuration, start the asynchronous run, handle questionnaire review, and return its report links. |
+| `wf-stakeholder-analysis` | Map who supports or resists a decision, and what would move them. |
 
 <!-- guide-inventory:end -->
 
