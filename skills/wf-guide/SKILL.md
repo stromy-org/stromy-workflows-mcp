@@ -24,6 +24,14 @@ context — it travels with you into every conversation.
   You never talk to it directly — you talk to Claude, and Claude reaches for
   the right tool.
 
+You can see all three in *your* setup just by asking. In any chat, say
+**"describe my workspace"** — or *"what skills and tools do I have here?"* — and
+Claude will tell you what it can actually see: your plugin, the skills it gives
+you, and which engines are switched on for this conversation. It's the quickest
+way to get your bearings in a new chat, the first thing to try when something
+seems missing, and you can keep asking from there (*"what can the research skills
+do?"*). Nothing to learn or install — just ask.
+
 ## What your tools do — two families
 
 Every Stromy skill belongs to one of two families:
