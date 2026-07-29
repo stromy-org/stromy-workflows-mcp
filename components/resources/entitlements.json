@@ -3,9 +3,9 @@
   "_notes": "Authored here, unlike contracts/ which are generated from Stromy. Join table: workflow -> entitled client slugs -> the client-facing wf-* skill. Default-deny: a workflow absent from this file, or present with an empty clients list, is operator-only. Every slug must match an Entra app role in terraform/entra.tf (local.workflow_app_roles) -- adding a slug here does not grant the role. scripts/check_entitlements.py fails CI when a contract has no entry here.",
   "workflows": {
     "stakeholder_analysis_workflow": {
-      "clients": ["dukestrategies"],
+      "clients": ["dukestrategies", "stromy"],
       "skill": "wf-stakeholder-analysis",
-      "note": "Duke Strategies pilot (ORG-PLAN-070)."
+      "note": "Duke Strategies pilot (ORG-PLAN-070). Stromy is the self-client full-fleet test surface -- the wf-* skills ship in stromy-plugin, so the slug must be entitled here (validate-plugin-completeness Invariant #19) and hold the client.stromy app role."
     },
     "weekly_intel_workflow": {
       "clients": [],
