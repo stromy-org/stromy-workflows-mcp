@@ -223,7 +223,7 @@ async def test_start_run_denies_a_non_entitled_resolved_owner(monkeypatch) -> No
     with pytest.raises(PermissionError, match="not entitled to workflow"):
         await service.start_run(
             "stakeholder_analysis_workflow",
-            {"decision_summary": "x", "inputs_md_folder": "/inputs/amaris"},
+            {"decision_summary": "x"},
             {"client_slug": "amaris"},
             None,
             scope,
@@ -268,7 +268,7 @@ async def test_template_injection_guard(monkeypatch) -> None:
     monkeypatch.setattr(service, "_persist_start", fake_persist)
     result = await service.start_run(
         "stakeholder_analysis_workflow",
-        {"decision_summary": sentinel, "inputs_md_folder": "/inputs/duke"},
+        {"decision_summary": sentinel},
         {"client_slug": "dukestrategies"},
         None,
         CallerScope(frozenset({"dukestrategies"})),
@@ -409,3 +409,58 @@ def test_facade_contains_no_schema_ddl() -> None:
     assert registry.__file__ is not None
     source = Path(registry.__file__).read_text()
     assert "CREATE" + " TABLE" not in source
+
+
+# ---------------------------------------------------------------------------
+# Tier 3 is locked in BOTH directions
+# ---------------------------------------------------------------------------
+# `describe` always hid tier 3 from a client, but `validate_config` echoed the full
+# effective config back — handing over every budget, model tier and stage toggle the
+# tier exists to keep private. Rejecting the write is only half the boundary.
+
+_CLIENT = CallerScope(frozenset({"dukestrategies"}))
+_OPERATOR = CallerScope(frozenset(), unrestricted=True)
+_MINIMAL = {"decision_summary": "A site closure decision"}
+
+
+def _tier3_names() -> set[str]:
+    contract = load_contract("stakeholder_analysis_workflow")
+    return {name for name, key in contract.keys.items() if key.tier == 3}
+
+
+def test_client_validate_config_withholds_provider_locked_keys() -> None:
+    seen = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _CLIENT)
+    assert not (_tier3_names() & set(seen)), "tier-3 keys leaked to a client caller"
+    # The caller still gets everything that IS theirs.
+    assert seen["decision_summary"] == _MINIMAL["decision_summary"]
+    assert seen["report_output_formats"] == ["html", "pdf"]
+
+
+def test_operator_validate_config_still_shows_provider_locked_keys() -> None:
+    """The operator owns the estate; withholding pins from them is not the goal."""
+    seen = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _OPERATOR)
+    assert _tier3_names() <= set(seen)
+    assert seen["deliverable_author_max_tokens"] == 16000
+
+
+def test_projection_never_reaches_what_the_runner_receives() -> None:
+    """The persisted config must keep the pins even for a client-started run."""
+    _, normalized = service._validated(
+        "stakeholder_analysis_workflow", _MINIMAL, _CLIENT
+    )
+    assert _tier3_names() <= set(normalized)
+    assert normalized["run_orchestrated_sourcing"] is True
+    # Evidence now comes from the orchestrator, so no folder is asked for or needed.
+    assert "inputs_md_folder" not in normalized
+
+
+def test_client_cannot_select_another_clients_brand() -> None:
+    """brand_slug is authorization: tier 3 rejects it, the worker derives it."""
+    with pytest.raises(ConfigRejected) as exc:
+        service.validate_config(
+            "stakeholder_analysis_workflow",
+            {**_MINIMAL, "brand_slug": "amaris"},
+            _CLIENT,
+        )
+    assert exc.value.code == "tier3_forbidden"
+    assert exc.value.keys == ["brand_slug"]
