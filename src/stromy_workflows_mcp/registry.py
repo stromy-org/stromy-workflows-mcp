@@ -1,105 +1,92 @@
-"""DML-only client for the Stromy-owned workflow registry schema."""
+"""Facade-side adapter over the shared ``workflow-runtime-core`` registry.
+
+This module used to carry its own copy of the Stromy-owned schema's DML —
+`INSERT INTO runs`, the idempotency savepoint, the resume `FOR UPDATE`, the
+whole lot. Two hand-maintained copies of one schema's statements, in two repos,
+kept in step by nothing but discipline. Since ORG-PLAN-155 Phase A there is one
+implementation and this file is the thin adapter onto it.
+
+**No SQL below this line**, deliberately — `test_facade_contains_no_schema_ddl`
+reads this module's source and asserts it. What remains here is only what is
+genuinely facade-shaped:
+
+* ``connect()`` takes no DSN. The facade resolves it from pydantic settings, not
+  from the ambient environment the core defaults to.
+* ``schema_version()`` keeps its name and its raise-on-out-of-range contract,
+  because ``server_hooks`` calls it on the readiness path and the health payload
+  is a public response body.
+* ``cancel_run()`` keeps the facade's own error wording for the same reason.
+
+The core install here is the BASE package: no LangGraph, no aio-pika. A contract
+test in the core asserts that boundary, and the facade's dependency audit
+asserts the resulting install.
+"""
 
 from __future__ import annotations
 
-import json
-import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
-import psycopg
-from psycopg.rows import dict_row
+from workflow_runtime_core import registry as core
+from workflow_runtime_core.exceptions import RegistryError, SchemaVersionMismatch
+from workflow_runtime_core.models import RunRecord as Run
+from workflow_runtime_core.schema import (
+    SUPPORTED_SCHEMA_MAX,
+    SUPPORTED_SCHEMA_MIN,
+    require_compatible_schema,
+)
 
 from .config import settings
 
-SUPPORTED_SCHEMA_MIN = 1
-SUPPORTED_SCHEMA_MAX = 1
-DbConnection = psycopg.Connection[dict[str, Any]]
+DbConnection = core.DbConnection
 
-
-class RegistryError(RuntimeError):
-    pass
-
-
-class SchemaVersionMismatch(RegistryError):
-    pass
-
-
-@dataclass(frozen=True)
-class Run:
-    run_id: str
-    workflow: str
-    thread_id: str
-    status: str
-    client_slug: str | None
-    config_json: dict[str, Any]
-    image_tag: str | None
-    job_template_json: dict[str, Any] | None
-    created_at: datetime
-    updated_at: datetime
-    interrupt_payload: dict[str, Any] | None
-    error: str | None
-    artifacts_json: dict[str, Any] | None
-    idempotency_key: str | None
-
-    @classmethod
-    def from_row(cls, row: dict[str, Any]) -> Run:
-        return cls(**{**row, "run_id": str(row["run_id"]), "thread_id": str(row["thread_id"])})
-
-    def public(self) -> dict[str, Any]:
-        return {
-            "run_id": self.run_id,
-            "workflow": self.workflow,
-            "status": self.status,
-            "client_slug": self.client_slug,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-            "interrupt_payload": self.interrupt_payload,
-            "error": self.error,
-            "artifacts": self.artifacts_json,
-        }
+__all__ = [
+    "SUPPORTED_SCHEMA_MAX",
+    "SUPPORTED_SCHEMA_MIN",
+    "DbConnection",
+    "RegistryError",
+    "Run",
+    "SchemaVersionMismatch",
+    "cancel_run",
+    "connect",
+    "create_run",
+    "get_run",
+    "list_runs",
+    "mark_failed",
+    "new_run_id",
+    "request_resume",
+    "schema_version",
+]
 
 
 @contextmanager
 def connect() -> Iterator[DbConnection]:
+    """Open a registry connection using the facade's configured DSN.
+
+    Deliberately no-arg: the facade's DSN comes from validated settings, and an
+    unset one is a misconfiguration to report, never a cue to fall back to a
+    local store.
+    """
     if not settings.stromy_pg_dsn:
         raise RegistryError("STROMY_PG_DSN is unset; the facade has no local fallback")
-    try:
-        conn = cast(
-            DbConnection,
-            psycopg.connect(
-                settings.stromy_pg_dsn,
-                row_factory=dict_row,  # pyright: ignore[reportArgumentType]
-            ),
-        )
-    except psycopg.Error as exc:
-        raise RegistryError(f"cannot reach workflow registry: {exc}") from exc
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    with core.connect(settings.stromy_pg_dsn) as conn:
+        yield conn
 
 
 def schema_version(conn: DbConnection) -> int:
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT version FROM schema_meta LIMIT 1")
-            row = cur.fetchone()
-    except psycopg.Error as exc:
-        raise SchemaVersionMismatch(f"registry schema metadata unavailable: {exc}") from exc
-    if not row:
-        raise SchemaVersionMismatch("registry schema_meta has no version row")
-    version = int(row["version"])
-    if not (SUPPORTED_SCHEMA_MIN <= version <= SUPPORTED_SCHEMA_MAX):
-        raise SchemaVersionMismatch(
-            f"registry schema v{version} is outside supported range "
-            f"[{SUPPORTED_SCHEMA_MIN}, {SUPPORTED_SCHEMA_MAX}]"
-        )
-    return version
+    """Live schema version, raising if it is outside the supported range.
+
+    Called on the readiness path: a facade compiled against a schema it cannot
+    read must fail its health check rather than serve.
+    """
+    return require_compatible_schema(
+        conn, minimum=SUPPORTED_SCHEMA_MIN, maximum=SUPPORTED_SCHEMA_MAX
+    )
+
+
+def new_run_id() -> str:
+    return core.new_run_id()
 
 
 def create_run(
@@ -113,64 +100,25 @@ def create_run(
     image_tag: str | None,
     idempotency_key: str | None,
 ) -> Run:
-    if idempotency_key:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM runs WHERE idempotency_key = %s", (idempotency_key,))
-            existing = cur.fetchone()
-        if existing:
-            return Run.from_row(existing)
-    try:
-        # Nested transaction = savepoint. A concurrent insert may win the
-        # partial unique index race; rolling back only this savepoint keeps the
-        # outer request transaction usable for the winner re-fetch.
-        with conn.transaction(), conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO runs (run_id, workflow, thread_id, status, client_slug,
-                                  config_json, image_tag, job_template_json,
-                                  idempotency_key)
-                VALUES (%s, %s, %s, 'queued', %s, %s, %s, %s, %s)
-                RETURNING *
-                """,
-                (
-                    run_id,
-                    workflow,
-                    run_id,
-                    client_slug,
-                    json.dumps(config),
-                    image_tag,
-                    json.dumps(job_template),
-                    idempotency_key,
-                ),
-            )
-            row = cur.fetchone()
-            if row is None:
-                raise RegistryError("run insert returned no row")
-            cur.execute(
-                "INSERT INTO run_events (run_id, kind, detail) VALUES (%s, 'created', %s)",
-                (run_id, json.dumps({"workflow": workflow, "client_slug": client_slug})),
-            )
-        return Run.from_row(row)
-    except psycopg.errors.UniqueViolation:
-        if not idempotency_key:
-            raise
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM runs WHERE idempotency_key = %s", (idempotency_key,))
-            winner = cur.fetchone()
-        if winner:
-            return Run.from_row(winner)
-        raise
+    """Register a queued run under a caller-minted id.
 
-
-def new_run_id() -> str:
-    return str(uuid.uuid4())
+    The id is minted before the row exists because the rendered job template
+    embeds it, and that exact template is what a resume replays.
+    """
+    return core.create_run(
+        conn,
+        run_id=run_id,
+        workflow=workflow,
+        config=config,
+        client_slug=client_slug,
+        job_template=job_template,
+        image_tag=image_tag,
+        idempotency_key=idempotency_key,
+    )
 
 
 def get_run(conn: DbConnection, run_id: str) -> Run | None:
-    with conn.cursor() as cur:
-        cur.execute("SELECT * FROM runs WHERE run_id = %s", (run_id,))
-        row = cur.fetchone()
-    return Run.from_row(row) if row else None
+    return core.get_run(conn, run_id)
 
 
 def list_runs(
@@ -179,65 +127,27 @@ def list_runs(
     client_slugs: Sequence[str] | None,
     limit: int = 50,
 ) -> list[Run]:
-    with conn.cursor() as cur:
-        if client_slugs is None:
-            cur.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT %s", (limit,))
-        elif not client_slugs:
-            return []
-        else:
-            cur.execute(
-                "SELECT * FROM runs WHERE client_slug = ANY(%s) ORDER BY created_at DESC LIMIT %s",
-                (list(client_slugs), limit),
-            )
-        return [Run.from_row(row) for row in cur.fetchall()]
+    """List runs within the caller's resolved scope.
+
+    ``None`` is the unscoped operator view; an EMPTY sequence is a scope that
+    resolved to zero clients and must return nothing — never the operator view.
+    """
+    return core.list_runs(conn, client_slugs=client_slugs, limit=limit)
 
 
 def request_resume(conn: DbConnection, run_id: str, payload: Any) -> Run:
-    with conn.cursor() as cur:
-        cur.execute("SELECT * FROM runs WHERE run_id = %s FOR UPDATE", (run_id,))
-        row = cur.fetchone()
-        if not row:
-            raise RegistryError(f"run {run_id} not found")
-        if row["status"] != "paused":
-            raise RegistryError(f"run {run_id} is {row['status']}, not paused")
-        config = dict(row["config_json"] or {})
-        config["_resume"] = payload
-        cur.execute(
-            "UPDATE runs SET status='queued', config_json=%s, interrupt_payload=NULL, "
-            "updated_at=now() WHERE run_id=%s RETURNING *",
-            (json.dumps(config), run_id),
-        )
-        updated = cur.fetchone()
-        cur.execute(
-            "INSERT INTO run_events (run_id, kind) VALUES (%s, 'resume_requested')",
-            (run_id,),
-        )
-    if updated is None:
-        raise RegistryError("resume update returned no row")
-    return Run.from_row(updated)
+    return core.request_resume(conn, run_id, payload)
 
 
 def cancel_run(conn: DbConnection, run_id: str) -> Run:
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE runs SET status='cancelled', updated_at=now() "
-            "WHERE run_id=%s AND status IN ('queued','paused') RETURNING *",
-            (run_id,),
-        )
-        row = cur.fetchone()
-        if not row:
-            raise RegistryError(f"run {run_id} cannot be cancelled from its current state")
-        cur.execute("INSERT INTO run_events (run_id, kind) VALUES (%s, 'cancelled')", (run_id,))
-    return Run.from_row(row)
+    """Cancel a non-terminal run, preserving the facade's error wording."""
+    try:
+        return core.cancel_run(conn, run_id)
+    except RegistryError as exc:
+        raise RegistryError(
+            f"run {run_id} cannot be cancelled from its current state"
+        ) from exc
 
 
 def mark_failed(conn: DbConnection, run_id: str, error: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE runs SET status='failed', error=%s, updated_at=now() WHERE run_id=%s",
-            (error[:8000], run_id),
-        )
-        cur.execute(
-            "INSERT INTO run_events (run_id, kind, detail) VALUES (%s, 'failed', %s)",
-            (run_id, json.dumps({"error": error[:2000]})),
-        )
+    core.mark_failed(conn, run_id, error)
