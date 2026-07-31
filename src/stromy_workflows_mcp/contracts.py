@@ -118,6 +118,28 @@ class Contract:
             ],
         }
 
+    def project(self, effective: dict[str, Any], role: CallerRole) -> dict[str, Any]:
+        """Filter a validated config down to what this caller may SEE.
+
+        ``validate`` deliberately returns the FULL effective config, pins included:
+        ``start_run`` persists exactly that for the runner, which needs them. But a
+        provider-locked key is locked in both directions — ``describe`` already hides
+        tier 3 from a client, so echoing the same keys back out of ``validate_config``
+        would hand over every budget, model tier, and internal stage toggle the tier
+        exists to keep private. Apply this to caller-facing returns ONLY, never to
+        what is stored or sent to the runner.
+        """
+        if role is CallerRole.OPERATOR:
+            return effective
+        locked = {name for name, key in self.keys.items() if key.tier == 3}
+        return _unflatten(
+            {
+                name: value
+                for name, value in _flatten(effective).items()
+                if name not in locked
+            }
+        )
+
     def validate(self, config: dict[str, Any], role: CallerRole) -> dict[str, Any]:
         errors = sorted(Draft202012Validator(self.schema).iter_errors(config), key=str)
         if errors:

@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from . import registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
-from .contracts import CallerRole, load_contract
+from .contracts import CallerRole, Contract, load_contract
 from .entitlements import require_entitled, require_visible, visible_workflows
 from .scoping import CallerScope, require_client
 
@@ -39,9 +39,25 @@ def describe_workflow(name: str, scope: CallerScope) -> dict[str, Any]:
     return load_contract(name).describe(_role(scope))
 
 
-def validate_config(name: str, config: dict[str, Any], scope: CallerScope) -> dict[str, Any]:
+def _validated(
+    name: str, config: dict[str, Any], scope: CallerScope
+) -> tuple[Contract, dict[str, Any]]:
+    """Validate and return the FULL effective config, provider pins included.
+
+    This is the internal shape: ``start_run`` persists it for the runner, which
+    needs the pins to run the right stages. It must never be handed to a caller —
+    route caller-facing returns through ``validate_config`` so ``Contract.project``
+    withholds tier 3.
+    """
     require_visible(name, scope)
-    return load_contract(name).validate(config, _role(scope))
+    contract = load_contract(name)
+    return contract, contract.validate(config, _role(scope))
+
+
+def validate_config(name: str, config: dict[str, Any], scope: CallerScope) -> dict[str, Any]:
+    """Caller-facing normalized config: provider-locked keys withheld."""
+    contract, effective = _validated(name, config, scope)
+    return contract.project(effective, _role(scope))
 
 
 def _persist_start(
@@ -88,7 +104,9 @@ async def start_run(
     # holding two client roles must not start a run owned by the unentitled one.
     # validate_config's own gate is union-scoped and cannot make this distinction.
     require_entitled(name, client_slug, scope)
-    normalized = validate_config(name, config, scope)
+    # The INTERNAL shape: the runner needs the provider pins, so this must not go
+    # through the caller-facing projection.
+    _, normalized = _validated(name, config, scope)
     run_id = registry.new_run_id()
     client = job_client or AcaJobClient()
     prepared = await client.prepare(run_id)
