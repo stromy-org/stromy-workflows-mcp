@@ -6,7 +6,7 @@ import json
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, cast
 
@@ -15,8 +15,20 @@ from psycopg.rows import dict_row
 
 from .config import settings
 
+# The expand/migrate/cutover/contract bridge (ORG-PLAN-164 WS0). Widened to
+# accept BOTH schemas *before* Stromy applies the v2 migration, because the
+# deploy order is migrate-then-deploy: a facade pinned to [1, 1] would start
+# rejecting the database the instant the migration lands, taking the whole
+# hosted surface down until its own deploy caught up. v1 support is contracted
+# away only after queue cutover and legacy-run disposition.
 SUPPORTED_SCHEMA_MIN = 1
-SUPPORTED_SCHEMA_MAX = 1
+SUPPORTED_SCHEMA_MAX = 2
+
+#: Schema version at which the workflow data plane's columns exist. Feature
+#: paths that need them refuse v1 with a named compatibility error rather than
+#: reading NULLs and pretending the feature works.
+DATA_PLANE_SCHEMA = 2
+
 DbConnection = psycopg.Connection[dict[str, Any]]
 
 
@@ -26,6 +38,25 @@ class RegistryError(RuntimeError):
 
 class SchemaVersionMismatch(RegistryError):
     pass
+
+
+class SchemaFeatureUnavailable(RegistryError):
+    """A data-plane feature was requested against a pre-v2 registry.
+
+    Distinct from ``SchemaVersionMismatch``: the registry is *servable*, the
+    caller simply asked for something the live schema cannot yet record. Named
+    so the facade returns a stable compatibility error instead of silently
+    writing a half-populated row.
+    """
+
+
+def require_data_plane(version: int, feature: str) -> None:
+    if version < DATA_PLANE_SCHEMA:
+        raise SchemaFeatureUnavailable(
+            f"{feature} requires registry schema v{DATA_PLANE_SCHEMA}; the live "
+            f"schema is v{version}. The Stromy migration lands before this "
+            "feature is usable."
+        )
 
 
 @dataclass(frozen=True)
@@ -44,13 +75,39 @@ class Run:
     error: str | None
     artifacts_json: dict[str, Any] | None
     idempotency_key: str | None
+    # --- schema v2 (workflow data plane, ORG-PLAN-164) -----------------------
+    # Every one of these defaults to None so a v1 row maps cleanly. The dataclass
+    # is the *union* of both schemas during expansion, never a v2-only shape.
+    workspace_id: str | None = None
+    retry_of: str | None = None
+    attempt_no: int | None = None
+    dispatch_id: str | None = None
+    lease_owner: str | None = None
+    lease_until: datetime | None = None
+    progress_json: dict[str, Any] | None = None
+    error_json: dict[str, Any] | None = None
+    heartbeat_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Run:
-        return cls(**{**row, "run_id": str(row["run_id"]), "thread_id": str(row["thread_id"])})
+        """Build a Run from a ``SELECT *`` row of EITHER schema version.
+
+        Field-filtered rather than splatted. A bare ``cls(**row)`` breaks in both
+        directions across the v1/v2 bridge: against v2 it raises on the new
+        columns it has never heard of, and against v1 it raises on the ones it
+        expects and does not get. Filtering to declared fields makes the same
+        code correct on both, which is what lets the facade keep serving while
+        the migration lands underneath it.
+        """
+        declared = {f.name for f in fields(cls)}
+        values = {name: value for name, value in row.items() if name in declared}
+        for key in ("run_id", "thread_id", "workspace_id", "retry_of", "dispatch_id"):
+            if values.get(key) is not None:
+                values[key] = str(values[key])
+        return cls(**values)
 
     def public(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "run_id": self.run_id,
             "workflow": self.workflow,
             "status": self.status,
@@ -61,6 +118,18 @@ class Run:
             "error": self.error,
             "artifacts": self.artifacts_json,
         }
+        # Omitted entirely on v1 rather than reported as null: an absent key is
+        # honest about "this registry cannot tell you", where `"progress": null`
+        # reads as "no progress yet".
+        if self.attempt_no is not None:
+            payload["attempt"] = {"attempt_no": self.attempt_no, "retry_of": self.retry_of}
+        if self.progress_json is not None:
+            payload["progress"] = self.progress_json
+        if self.heartbeat_at is not None:
+            payload["heartbeat_at"] = self.heartbeat_at.isoformat()
+        if self.error_json is not None:
+            payload["failure"] = self.error_json
+        return payload
 
 
 @contextmanager

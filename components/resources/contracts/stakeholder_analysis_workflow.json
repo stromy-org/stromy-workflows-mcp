@@ -136,5 +136,7 @@
       "x-tier": 3
     }
   },
-  "workflow": "stakeholder_analysis_workflow"
+  "workflow": "stakeholder_analysis_workflow",
+  "x-artifact-adapter": "stakeholder_exports",
+  "x-input-adapter": "inputset"
 }
