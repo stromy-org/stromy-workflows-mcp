@@ -235,6 +235,47 @@ def new_run_id() -> str:
     return str(uuid.uuid4())
 
 
+def set_dispatch(conn: DbConnection, run_id: str, dispatch_id: str) -> None:
+    """Record which dispatch a run belongs to, before the message is enqueued.
+
+    The runner's claim re-checks this value, so a stale message from an earlier
+    dispatch of the same run cannot start a second writer.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET dispatch_id = %s, updated_at = now() WHERE run_id = %s",
+            (dispatch_id, run_id),
+        )
+
+
+def mark_dispatch_failed(conn: DbConnection, run_id: str, reason: str) -> None:
+    """Enqueue failed after the run row was committed.
+
+    The row survives on purpose. A run that exists but was never dispatched is
+    recoverable by an operator retry; deleting it would leave a client holding a
+    run id that will never mean anything again.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET error_json = %s, updated_at = now() WHERE run_id = %s",
+            (
+                json.dumps(
+                    {
+                        "stage": "dispatch",
+                        "error_type": "DispatchEnqueueFailed",
+                        "message": reason[:2000],
+                        "retryable": True,
+                    }
+                ),
+                run_id,
+            ),
+        )
+        cur.execute(
+            "INSERT INTO run_events (run_id, kind, detail) VALUES (%s, 'dispatch_failed', %s)",
+            (run_id, json.dumps({"reason": reason[:2000]})),
+        )
+
+
 def get_run(conn: DbConnection, run_id: str) -> Run | None:
     with conn.cursor() as cur:
         cur.execute("SELECT * FROM runs WHERE run_id = %s", (run_id,))

@@ -12,6 +12,11 @@ authors = [{ name = "William Masquelier", email = "william.masquelier@stromy.com
 # never by the template rewriting this list.
 dependencies = [
     "azure-identity>=1.19,<2",
+    # Queue dispatch + browser-upload SAS minting (ORG-PLAN-164). Both
+    # authenticate as the facade's managed identity via azure-identity above —
+    # a user-delegation SAS is signed with an Entra key, never the account key.
+    "azure-storage-blob>=12.23,<13",
+    "azure-storage-queue>=12.11,<13",
     "fastmcp>=3.0.0",
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",

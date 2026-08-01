@@ -8,6 +8,13 @@ from typing import Any, Protocol
 from . import registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
 from .contracts import CallerRole, load_contract
+from .dispatch import (
+    Dispatcher,
+    DispatchError,
+    QueueDispatcher,
+    build_dispatcher,
+    new_dispatch_id,
+)
 from .entitlements import require_entitled, require_visible, visible_workflows
 from .scoping import CallerScope, require_client
 
@@ -53,10 +60,11 @@ def _persist_start(
     template: dict[str, Any],
     image_tag: str | None,
     idempotency_key: str | None,
+    dispatch_id: str | None = None,
 ) -> registry.Run:
     with registry.connect() as conn:
-        registry.schema_version(conn)
-        return registry.create_run(
+        version = registry.schema_version(conn)
+        run = registry.create_run(
             conn,
             run_id=run_id,
             workflow=name,
@@ -66,11 +74,26 @@ def _persist_start(
             image_tag=image_tag,
             idempotency_key=idempotency_key,
         )
+        # The row must already know its dispatch id when the message lands, or a
+        # fast runner could claim against a row that has not been told which
+        # dispatch it belongs to — and reject its own message. Recorded inside
+        # the same transaction as the insert, so it is committed before anything
+        # is enqueued.
+        if dispatch_id is not None and run.run_id == run_id:
+            registry.require_data_plane(version, "queue dispatch")
+            registry.set_dispatch(conn, run_id, dispatch_id)
+            run = registry.get_run(conn, run_id) or run
+    return run
 
 
 def _mark_failed(run_id: str, error: str) -> None:
     with registry.connect() as conn:
         registry.mark_failed(conn, run_id, error)
+
+
+def _mark_dispatch_failed(run_id: str, reason: str) -> None:
+    with registry.connect() as conn:
+        registry.mark_dispatch_failed(conn, run_id, reason)
 
 
 async def start_run(
@@ -81,6 +104,7 @@ async def start_run(
     scope: CallerScope,
     *,
     job_client: JobClient | None = None,
+    dispatcher: Dispatcher | None = None,
 ) -> dict[str, Any]:
     context = client_context or {}
     client_slug = require_client(scope, context.get("client_slug"))
@@ -92,6 +116,11 @@ async def start_run(
     run_id = registry.new_run_id()
     client = job_client or AcaJobClient()
     prepared = await client.prepare(run_id)
+
+    dispatcher = dispatcher or build_dispatcher(client)
+    queued = isinstance(dispatcher, QueueDispatcher)
+    dispatch_id = new_dispatch_id() if queued else None
+
     run = await asyncio.to_thread(
         _persist_start,
         run_id=run_id,
@@ -101,14 +130,28 @@ async def start_run(
         template=prepared.template,
         image_tag=prepared.image_tag,
         idempotency_key=idempotency_key,
+        dispatch_id=dispatch_id,
     )
     if run.run_id != run_id:
         return {**run.public(), "idempotent_replay": True}
+
+    # Enqueue only AFTER the row is committed. The reverse order would let a
+    # runner receive a message for a run that does not exist yet.
     try:
-        await client.start(prepared.template)
+        await dispatcher.dispatch(
+            run_id=run_id, dispatch_id=dispatch_id or "", template=prepared.template
+        )
     except JobStartError as exc:
         await asyncio.to_thread(_mark_failed, run_id, str(exc))
         raise
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a dispatch failure
+        # The row is deliberately NOT deleted or failed-terminal: a committed
+        # run that was never dispatched is recoverable by an operator retry,
+        # whereas a deleted row is a run the client was told about and can
+        # never be told anything more about. Re-enqueueing is safe because the
+        # dispatch id makes a duplicate message a no-op at claim time.
+        await asyncio.to_thread(_mark_dispatch_failed, run_id, str(exc))
+        raise DispatchError(f"run {run_id} was created but not dispatched: {exc}") from exc
     return run.public()
 
 
@@ -131,22 +174,43 @@ async def resume_run(
     scope: CallerScope,
     *,
     job_client: JobClient | None = None,
+    dispatcher: Dispatcher | None = None,
 ) -> dict[str, Any]:
+    client = job_client or AcaJobClient()
+    dispatcher = dispatcher or build_dispatcher(client)
+    queued = isinstance(dispatcher, QueueDispatcher)
+    # A resume is a NEW dispatch of an existing run: same run id, same thread,
+    # same workspace, fresh dispatch id. Minting a new one is what lets the
+    # claim reject a redelivery of the *original* start message, which would
+    # otherwise be indistinguishable from this resume.
+    dispatch_id = new_dispatch_id() if queued else None
+
     def _request() -> tuple[registry.Run, dict[str, Any]]:
         with registry.connect() as conn:
             run = _require_run_scope(registry.get_run(conn, run_id), scope)
-            if not run.job_template_json:
+            # The stored template is only needed by the ARM lane; a queue-lane
+            # resume resolves everything from the row, so an event-dispatched
+            # run legitimately has no template to replay.
+            if not queued and not run.job_template_json:
                 raise registry.RegistryError(f"run {run_id} has no stored job template")
             resumed = registry.request_resume(conn, run_id, resume_payload)
-            return resumed, run.job_template_json
+            if dispatch_id is not None:
+                registry.set_dispatch(conn, run_id, dispatch_id)
+            return resumed, run.job_template_json or {}
 
     resumed, template = await asyncio.to_thread(_request)
-    client = job_client or AcaJobClient()
     try:
-        await client.start(template)
+        await dispatcher.dispatch(
+            run_id=run_id, dispatch_id=dispatch_id or "", template=template
+        )
     except JobStartError as exc:
         await asyncio.to_thread(_mark_failed, run_id, str(exc))
         raise
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a dispatch failure
+        # The run stays `queued`: it is genuinely awaiting a runner, and an
+        # operator re-dispatch is safe because the dispatch id de-duplicates.
+        await asyncio.to_thread(_mark_dispatch_failed, run_id, str(exc))
+        raise DispatchError(f"run {run_id} was resumed but not dispatched: {exc}") from exc
     return resumed.public()
 
 
