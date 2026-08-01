@@ -248,6 +248,15 @@ def set_dispatch(conn: DbConnection, run_id: str, dispatch_id: str) -> None:
         )
 
 
+def set_input_set(conn: DbConnection, run_id: str, session_id: str) -> None:
+    """Bind the attached input set to the run. Same transaction as the insert."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET input_set_id = %s, updated_at = now() WHERE run_id = %s",
+            (session_id, run_id),
+        )
+
+
 def mark_dispatch_failed(conn: DbConnection, run_id: str, reason: str) -> None:
     """Enqueue failed after the run row was committed.
 

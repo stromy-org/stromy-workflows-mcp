@@ -268,7 +268,12 @@ async def test_template_injection_guard(monkeypatch) -> None:
     monkeypatch.setattr(service, "_persist_start", fake_persist)
     result = await service.start_run(
         "stakeholder_analysis_workflow",
-        {"decision_summary": sentinel, "inputs_md_folder": "/inputs/duke"},
+        {
+            "decision_summary": sentinel,
+            # ORG-PLAN-164: evidence arrives as an ownership-checked handle, not
+            # as a server-side path (see the raw-path test below).
+            "inputs_md_folder": "inputset:11111111-1111-1111-1111-111111111111",
+        },
         {"client_slug": "dukestrategies"},
         None,
         CallerScope(frozenset({"dukestrategies"})),
@@ -279,6 +284,27 @@ async def test_template_injection_guard(monkeypatch) -> None:
     assert sentinel not in json.dumps(captured["template"])
     assert sentinel not in json.dumps(captured["started_template"])
     assert result["status"] == "queued"
+    # The handle reaches _persist_start, which attaches it in the run's own
+    # transaction — a run can never be dispatched referencing evidence it does
+    # not own.
+    assert captured["input_handle"] == "inputset:11111111-1111-1111-1111-111111111111"
+
+
+@pytest.mark.asyncio
+async def test_a_server_side_path_is_no_longer_accepted_as_evidence() -> None:
+    """A raw path would name a folder on a share every runner can see.
+
+    Before ORG-PLAN-164 ``inputs_md_folder`` was a free string, so a client
+    could point a run at any path the runner could reach. The contract pattern
+    is what closes that; the ownership check on the handle is what replaces it.
+    """
+    with pytest.raises(ConfigRejected) as exc:
+        service.validate_config(
+            "stakeholder_analysis_workflow",
+            {"decision_summary": "x", "inputs_md_folder": "/mnt/runs/othercli/secrets"},
+            CallerScope(frozenset({"dukestrategies"})),
+        )
+    assert exc.value.code == "schema_invalid"
 
 
 @pytest.mark.asyncio

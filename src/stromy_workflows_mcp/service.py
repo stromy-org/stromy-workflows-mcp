@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol
 
-from . import registry
+from . import input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
 from .contracts import CallerRole, load_contract
 from .dispatch import (
@@ -61,6 +61,8 @@ def _persist_start(
     image_tag: str | None,
     idempotency_key: str | None,
     dispatch_id: str | None = None,
+    input_handle: str | None = None,
+    scope: CallerScope | None = None,
 ) -> registry.Run:
     with registry.connect() as conn:
         version = registry.schema_version(conn)
@@ -79,11 +81,35 @@ def _persist_start(
         # dispatch it belongs to — and reject its own message. Recorded inside
         # the same transaction as the insert, so it is committed before anything
         # is enqueued.
-        if dispatch_id is not None and run.run_id == run_id:
-            registry.require_data_plane(version, "queue dispatch")
-            registry.set_dispatch(conn, run_id, dispatch_id)
+        if run.run_id == run_id:
+            # Attach the input set in the SAME transaction as the insert, so a
+            # run can never be dispatched referencing evidence it does not own.
+            # An unowned or unfinalized handle raises here and rolls the whole
+            # run back, rather than leaving a run pointing at nothing.
+            if input_handle is not None and scope is not None:
+                registry.require_data_plane(version, "input sets")
+                session_id = input_sessions.attach_to_run(
+                    conn, handle=input_handle, run_id=run_id, scope=scope
+                )
+                registry.set_input_set(conn, run_id, session_id)
+            if dispatch_id is not None:
+                registry.require_data_plane(version, "queue dispatch")
+                registry.set_dispatch(conn, run_id, dispatch_id)
             run = registry.get_run(conn, run_id) or run
     return run
+
+
+def _input_handle(workflow: str, normalized: dict[str, Any]) -> str | None:
+    """Return the ``inputset:`` handle this run carries, if its adapter uses one.
+
+    Driven off the contract's declared adapter rather than a hardcoded key name,
+    so a second inputset-consuming workflow needs no change here.
+    """
+    schema = load_contract(workflow).schema
+    if schema.get("x-input-adapter") != "inputset":
+        return None
+    value = normalized.get("inputs_md_folder")
+    return value if isinstance(value, str) and value.startswith("inputset:") else None
 
 
 def _mark_failed(run_id: str, error: str) -> None:
@@ -121,6 +147,12 @@ async def start_run(
     queued = isinstance(dispatcher, QueueDispatcher)
     dispatch_id = new_dispatch_id() if queued else None
 
+    # A workflow whose input adapter is `inputset` receives its evidence as a
+    # handle, never as a server-side path. The contract's own pattern already
+    # rejects a raw path; this is what turns the accepted handle into an
+    # ownership-checked attachment.
+    input_handle = _input_handle(name, normalized)
+
     run = await asyncio.to_thread(
         _persist_start,
         run_id=run_id,
@@ -131,6 +163,8 @@ async def start_run(
         image_tag=prepared.image_tag,
         idempotency_key=idempotency_key,
         dispatch_id=dispatch_id,
+        input_handle=input_handle,
+        scope=scope,
     )
     if run.run_id != run_id:
         return {**run.public(), "idempotent_replay": True}

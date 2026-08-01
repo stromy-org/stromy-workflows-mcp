@@ -44,9 +44,10 @@
       "x-tier": 3
     },
     "inputs_md_folder": {
-      "description": "Server-side folder containing source material for the analysis.",
+      "description": "Finalized input-set handle from create_input_session/finalize_input_session (inputset:<uuid>). The runner rehydrates the files into the run workspace and rewrites this to the local folder.",
+      "pattern": "^inputset:[0-9a-f-]+$",
       "type": "string",
-      "x-ask": "Which uploaded or server-side evidence folder should the analysis use?",
+      "x-ask": "Which uploaded evidence set should the analysis use? Create one with create_input_session if you do not have a handle yet.",
       "x-tier": 1
     },
     "report_output_formats": {
