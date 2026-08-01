@@ -96,11 +96,11 @@ def dispatch_mode() -> str:
 
 def queue_client() -> Any:
     """Azure Storage Queue client authenticated by the facade's managed identity."""
-    account = os.environ.get("ASSET_STORE_ACCOUNT", "").strip()
+    account = os.environ.get("WORKFLOW_STORAGE_ACCOUNT", "").strip()
     queue_name = os.environ.get("WORKFLOW_DISPATCH_QUEUE", "workflow-runs").strip()
     if not account:
         raise DispatchError(
-            "ASSET_STORE_ACCOUNT is unset; queue dispatch has no account to send to"
+            "WORKFLOW_STORAGE_ACCOUNT is unset; queue dispatch has no account to send to"
         )
     try:
         from azure.identity import DefaultAzureCredential  # noqa: PLC0415

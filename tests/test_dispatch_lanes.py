@@ -116,6 +116,6 @@ def test_encoding_matches_the_runner_contract() -> None:
 
 
 def test_queue_client_refuses_without_an_account(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ASSET_STORE_ACCOUNT", raising=False)
-    with pytest.raises(dispatch.DispatchError, match="ASSET_STORE_ACCOUNT"):
+    monkeypatch.delenv("WORKFLOW_STORAGE_ACCOUNT", raising=False)
+    with pytest.raises(dispatch.DispatchError, match="WORKFLOW_STORAGE_ACCOUNT"):
         dispatch.queue_client()
