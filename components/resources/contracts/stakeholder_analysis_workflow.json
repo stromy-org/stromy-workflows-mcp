@@ -4,10 +4,10 @@
   "description": "Curated hosted surface for stakeholder acceptance analysis. Operator-local configuration remains broader.",
   "properties": {
     "brand_slug": {
-      "default": "stromy",
-      "description": "Brand overlay used for report and deliverable rendering.",
+      "description": "Brand overlay for rendering. Derived from the run owner; an operator may override.",
       "type": "string",
-      "x-tier": 2
+      "x-pinned": null,
+      "x-tier": 3
     },
     "decision_summary": {
       "description": "The decision, proposal, or change whose stakeholder acceptance should be analysed.",
@@ -42,12 +42,6 @@
       "type": "string",
       "x-pinned": "direct",
       "x-tier": 3
-    },
-    "inputs_md_folder": {
-      "description": "Server-side folder containing source material for the analysis.",
-      "type": "string",
-      "x-ask": "Which uploaded or server-side evidence folder should the analysis use?",
-      "x-tier": 1
     },
     "report_output_formats": {
       "default": [
@@ -92,7 +86,7 @@
     },
     "run_orchestrated_sourcing": {
       "type": "boolean",
-      "x-pinned": false,
+      "x-pinned": true,
       "x-tier": 3
     },
     "run_probability_estimator": {

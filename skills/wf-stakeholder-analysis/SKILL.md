@@ -43,19 +43,35 @@ configuration. If its tools are unavailable, tell the user to connect that works
 connector and stop. Do not fall back to a local checkout, shell command, or another
 client's connection.
 
+## Where the evidence comes from
+
+The run sources its own evidence. A research-orchestration stage gathers source
+material as part of the flow and hands it to document loading, so there is no evidence
+folder to choose and none to ask for. Two things follow:
+
+- **Never ask the user for a path, folder, or uploaded location**, and never accept one
+  they volunteer. Paths on their machine are unreachable from the hosted service, and
+  paths inside the service are not theirs to name.
+- If the user wants specific documents considered, say plainly that supplying your own
+  documents is not yet supported on the hosted service, and that the run will gather
+  public evidence about the decision instead. Do not improvise an upload, a URL list, or
+  a local build. Let them decide whether to continue on that basis.
+
 ## Interview and configuration
 
 1. Call `describe_workflow(name="stakeholder_analysis_workflow")`. Treat the returned
    contract as authoritative; do not rely on remembered fields.
 2. Ask every visible tier-1 question whose answer is not already present in the user's
-   request. Group compatible questions into one short structured interview. The
-   decision/proposal being assessed must be explicit. An evidence-folder field is
-   optional unless the live contract says otherwise; only accept a path the hosted
-   service has provisioned, never a path from the user's local machine.
-3. Use the resolved overlay slug as the tier-2 `brand_slug` when that field exists.
-   Offer tier-2 settings only when they materially affect the result (report title and
+   request. Group compatible questions into one short structured interview. Today that
+   is one question: the decision or proposed change being assessed, which must be
+   explicit. **Never ask the user for a file path or evidence folder** — the service
+   gathers its own evidence (see "Where the evidence comes from"), and a path the user
+   could name is one the service cannot read.
+3. Offer tier-2 settings only when they materially affect the result (report title and
    output formats). Never ask about, expose, or submit tier-3 provider controls such as
-   model tiers, chunking, retries, internal stages, or budget caps.
+   model tiers, chunking, retries, internal stages, or budget caps. The client's brand
+   is **derived server-side** from the run owner, so do not ask for it or submit it —
+   still say which client you resolved, so a wrong overlay is visible to the user.
 4. Re-emit the full proposed configuration in this plain Markdown block on every
    revision:
 
@@ -63,13 +79,17 @@ client's connection.
    ## Stakeholder-analysis run
    - Client: …
    - Decision or change: …
-   - Evidence source: … / none supplied
    - Report title: …
    - Deliverables: …
    - Other defaults accepted: …
    ```
 
-   Keep this as a review surface in chat. Do not claim it is a rendered canvas.
+   This is a **pre-flight confirmation block**, not a deliverable canvas: the user is
+   approving values that will fire a billed run, not co-authoring content that will
+   ship. So keep it in chat as plain Markdown, show the exact values as they will be
+   submitted, re-emit it in full on every revision, and require an explicit go-ahead.
+   Never emit it as an artifact — an editable canvas has no notion of "the exact bytes
+   I am about to submit", which is the whole point of this step.
 5. Call `validate_config(name="stakeholder_analysis_workflow", config=…)`. If validation
    fails, explain the field-level issue, revise the same summary, and validate again.
    Only a normalized, validated config may be started.
