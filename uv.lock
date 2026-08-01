@@ -1341,7 +1341,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "workflow-runtime-core", git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.1.1" },
+    { name = "workflow-runtime-core", git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.1.3" },
 ]
 
 [package.metadata.requires-dev]
@@ -1547,8 +1547,8 @@ wheels = [
 
 [[package]]
 name = "workflow-runtime-core"
-version = "0.1.1"
-source = { git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.1.1#ec9e4cf6e8ca504977f1f10084df5a67cd93e739" }
+version = "0.1.3"
+source = { git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.1.3#c1e40484c55dee31a29d8645a1d661fec257e198" }
 dependencies = [
     { name = "click" },
     { name = "psycopg", extra = ["binary"] },
