@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from . import registry
+from . import registry, upload_page
 from .config import settings
 
 if TYPE_CHECKING:
@@ -66,3 +66,13 @@ def register(mcp: FastMCP) -> None:
         route for route in mcp._additional_http_routes if getattr(route, "path", None) != "/health"
     ]
     mcp.custom_route("/health", methods=["GET"])(health)
+
+    # ORG-PLAN-164 WS3 — the browser upload surface. Custom routes sit outside
+    # the MCP OAuth boundary by design here: the person uploading holds a
+    # capability link, not an Entra app role. See upload_page's module docstring
+    # for why that is the narrower model rather than the weaker one.
+    mcp.custom_route("/uploads/{session_id}", methods=["GET"])(upload_page.upload_page)
+    mcp.custom_route("/uploads/{session_id}/urls", methods=["POST"])(upload_page.upload_urls)
+    mcp.custom_route("/uploads/{session_id}/finalize", methods=["POST"])(
+        upload_page.upload_finalize
+    )

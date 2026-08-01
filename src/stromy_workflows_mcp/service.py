@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Protocol
 
 from . import input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
+from .blobs import AzureStagedReader
+from .config import settings
 from .contracts import CallerRole, load_contract
 from .dispatch import (
     Dispatcher,
@@ -17,6 +20,7 @@ from .dispatch import (
 )
 from .entitlements import require_entitled, require_visible, visible_workflows
 from .scoping import CallerScope, require_client
+from .uploads import SESSION_TTL_SECONDS, DeclaredFile
 
 
 class JobClient(Protocol):
@@ -253,6 +257,77 @@ def cancel_run(run_id: str, scope: CallerScope) -> dict[str, Any]:
         _require_run_scope(registry.get_run(conn, run_id), scope)
         cancelled = registry.cancel_run(conn, run_id)
     return cancelled.public()
+
+
+def _public_base_url() -> str:
+    """Origin the browser upload page is reachable at.
+
+    Falls back to the OAuth base URL because that is already the facade's own
+    externally-resolvable origin — the one value guaranteed correct wherever
+    this is deployed.
+    """
+    explicit = os.environ.get("WORKFLOW_PUBLIC_BASE_URL", "").strip()
+    return (explicit or settings.oauth_base_url).rstrip("/")
+
+
+def create_input_session(
+    files: list[dict[str, Any]],
+    client_context: dict[str, Any] | None,
+    scope: CallerScope,
+) -> dict[str, Any]:
+    """Open an upload session and return a one-time browser upload link.
+
+    The link — not a set of SAS URLs — is what comes back to the caller. An
+    agent has no filesystem the client's documents live on; a human does. So the
+    capability travels to a browser the person controls, and the bytes go
+    straight from that browser to storage without transiting this facade.
+    """
+    context = client_context or {}
+    client_slug = require_client(scope, context.get("client_slug"))
+    declared = [
+        DeclaredFile(
+            name=str(item.get("name", "")),
+            size_bytes=int(item.get("size_bytes") or 0),
+            media_type=item.get("media_type"),
+        )
+        for item in files
+    ]
+    with registry.connect() as conn:
+        registry.require_data_plane(registry.schema_version(conn), "input sessions")
+        session, token, _accepted = input_sessions.create_session(
+            conn, client_slug=client_slug, files=declared
+        )
+    payload = session.public()
+    # The raw token exists only in this response. It is not stored, not logged,
+    # and cannot be re-derived from the row.
+    payload["upload_url"] = (
+        f"{_public_base_url()}/uploads/{session.session_id}?t={token}"
+    )
+    payload["expires_in_seconds"] = SESSION_TTL_SECONDS
+    return payload
+
+
+def get_input_session(handle: str, scope: CallerScope) -> dict[str, Any]:
+    """Report one caller-owned session's progress. Never returns the token."""
+    session_id = input_sessions.parse_handle(handle)
+    with registry.connect() as conn:
+        session = input_sessions.get_session(conn, session_id, scope)
+    return session.public()
+
+
+def finalize_input_session(
+    handle: str, scope: CallerScope, *, fetch_bytes: Any = None
+) -> dict[str, Any]:
+    """Verify every uploaded object and close the session.
+
+    Idempotent, so the browser page and the agent can both call it without
+    racing to a wrong answer.
+    """
+    session_id = input_sessions.parse_handle(handle)
+    reader = fetch_bytes or AzureStagedReader()
+    with registry.connect() as conn:
+        session = input_sessions.finalize(conn, session_id, scope, fetch_bytes=reader)
+    return session.public()
 
 
 def get_results(run_id: str, scope: CallerScope) -> dict[str, Any]:
