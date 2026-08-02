@@ -10,7 +10,7 @@ from . import input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
 from .blobs import AzureStagedReader
 from .config import settings
-from .contracts import CallerRole, load_contract
+from .contracts import CallerRole, Contract, load_contract
 from .dispatch import (
     Dispatcher,
     DispatchError,
@@ -50,9 +50,25 @@ def describe_workflow(name: str, scope: CallerScope) -> dict[str, Any]:
     return load_contract(name).describe(_role(scope))
 
 
-def validate_config(name: str, config: dict[str, Any], scope: CallerScope) -> dict[str, Any]:
+def _validated(
+    name: str, config: dict[str, Any], scope: CallerScope
+) -> tuple[Contract, dict[str, Any]]:
+    """Validate and return the FULL effective config, provider pins included.
+
+    This is the internal shape: ``start_run`` persists it for the runner, which
+    needs the pins to run the right stages. It must never be handed to a caller —
+    route caller-facing returns through ``validate_config`` so ``Contract.project``
+    withholds tier 3.
+    """
     require_visible(name, scope)
-    return load_contract(name).validate(config, _role(scope))
+    contract = load_contract(name)
+    return contract, contract.validate(config, _role(scope))
+
+
+def validate_config(name: str, config: dict[str, Any], scope: CallerScope) -> dict[str, Any]:
+    """Caller-facing normalized config: provider-locked keys withheld."""
+    contract, effective = _validated(name, config, scope)
+    return contract.project(effective, _role(scope))
 
 
 def _persist_start(
@@ -103,16 +119,37 @@ def _persist_start(
     return run
 
 
+HANDLE_PATTERN = "^inputset:[0-9a-f-]+$"
+
+
 def _input_handle(workflow: str, normalized: dict[str, Any]) -> str | None:
     """Return the ``inputset:`` handle this run carries, if its adapter uses one.
 
-    Driven off the contract's declared adapter rather than a hardcoded key name,
-    so a second inputset-consuming workflow needs no change here.
+    The key NAME is discovered from the schema — the property whose pattern is
+    the handle grammar — rather than hardcoded. A hardcoded name is what made the
+    first version of this brittle: the key was renamed (``inputs_md_folder`` ->
+    ``input_set``, since the old name described document loading's *derived*
+    output rather than a client's raw upload) and a name-matching lookup would
+    have gone silently None, dropping the attachment with no error anywhere.
     """
     schema = load_contract(workflow).schema
     if schema.get("x-input-adapter") != "inputset":
         return None
-    value = normalized.get("inputs_md_folder")
+    properties = schema.get("properties") or {}
+    keys = [
+        name
+        for name, spec in properties.items()
+        if isinstance(spec, dict) and spec.get("pattern") == HANDLE_PATTERN
+    ]
+    if len(keys) != 1:
+        # Zero means the contract declares the adapter but offers no way to pass
+        # a handle; more than one means the run is ambiguous. Both are contract
+        # bugs, and both must be loud rather than silently unattached.
+        raise registry.RegistryError(
+            f"{workflow} declares the inputset adapter but has {len(keys)} "
+            "handle-shaped config keys; expected exactly one"
+        )
+    value = normalized.get(keys[0])
     return value if isinstance(value, str) and value.startswith("inputset:") else None
 
 
@@ -142,7 +179,9 @@ async def start_run(
     # holding two client roles must not start a run owned by the unentitled one.
     # validate_config's own gate is union-scoped and cannot make this distinction.
     require_entitled(name, client_slug, scope)
-    normalized = validate_config(name, config, scope)
+    # The INTERNAL shape: the runner needs the provider pins, so this must not go
+    # through the caller-facing projection.
+    _, normalized = _validated(name, config, scope)
     run_id = registry.new_run_id()
     client = job_client or AcaJobClient()
     prepared = await client.prepare(run_id)

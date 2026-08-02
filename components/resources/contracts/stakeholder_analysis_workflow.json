@@ -4,10 +4,10 @@
   "description": "Curated hosted surface for stakeholder acceptance analysis. Operator-local configuration remains broader.",
   "properties": {
     "brand_slug": {
-      "default": "stromy",
-      "description": "Brand overlay used for report and deliverable rendering.",
+      "description": "Brand overlay for rendering. Derived from the run owner; an operator may override.",
       "type": "string",
-      "x-tier": 2
+      "x-pinned": null,
+      "x-tier": 3
     },
     "decision_summary": {
       "description": "The decision, proposal, or change whose stakeholder acceptance should be analysed.",
@@ -43,12 +43,11 @@
       "x-pinned": "direct",
       "x-tier": 3
     },
-    "inputs_md_folder": {
-      "description": "Finalized input-set handle from create_input_session/finalize_input_session (inputset:<uuid>). The runner rehydrates the files into the run workspace and rewrites this to the local folder.",
+    "input_set": {
+      "description": "Optional finalized input-set handle (inputset:<uuid>) from create_input_session/finalize_input_session. The runner rehydrates the uploaded documents into the run's raw-inputs folder, where document loading picks them up alongside anything orchestrated sourcing gathers. Tier 2, with no default: absent simply means no client-supplied documents.",
       "pattern": "^inputset:[0-9a-f-]+$",
       "type": "string",
-      "x-ask": "Which uploaded evidence set should the analysis use? Create one with create_input_session if you do not have a handle yet.",
-      "x-tier": 1
+      "x-tier": 2
     },
     "report_output_formats": {
       "default": [
@@ -93,7 +92,7 @@
     },
     "run_orchestrated_sourcing": {
       "type": "boolean",
-      "x-pinned": false,
+      "x-pinned": true,
       "x-tier": 3
     },
     "run_probability_estimator": {
