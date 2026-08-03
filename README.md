@@ -11,7 +11,8 @@ executions with server-controlled templates.
 
 ## Tools
 
-- `list_workflows` / `describe_workflow` / `validate_config`
+- `list_workflows` (chooser's summary) / `describe_workflow` (tiered contract) /
+  `validate_config` (dry run: normalized config + the resolved run owner)
 - `start_run` / `run_status` / `list_runs`
 - `resume_run` / `cancel_run` / `get_results`
 - `fs_list` / `fs_read` for the hosted `wf-*` skills
@@ -19,7 +20,9 @@ executions with server-controlled templates.
 Tier 1 keys are interview questions, tier 2 keys are caller-overridable
 defaults, and tier 3 keys are provider-locked. Client tokens cannot see or set
 tier 3. Run ownership comes only from verified `client.<slug>` roles; a
-chat-supplied slug can narrow scope but never grant it.
+chat-supplied slug can narrow scope but never grant it. Ownership is never
+inferred from a default — an operator may name any client but must name one,
+because the runner derives the deliverable's brand from the owner.
 
 Authorization has four layers, each answering a different question:
 
