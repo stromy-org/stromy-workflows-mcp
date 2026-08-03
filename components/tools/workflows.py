@@ -17,10 +17,10 @@ def _error(exc: Exception) -> ToolError:
 
 @tool
 async def list_workflows() -> list[dict[str, Any]]:
-    """List hosted workflows and the caller-visible configuration contract.
+    """List hosted workflows the caller may run, with their interview questions.
 
-    Client callers see tier-1 interview questions and tier-2 defaults. Provider-
-    locked tier-3 keys are visible only to the operator role.
+    A summary for CHOOSING a workflow. Call ``describe_workflow`` for the tiered
+    contract needed to configure one.
     """
     try:
         return await asyncio.to_thread(service.list_workflows, identity.caller_scope())
@@ -30,7 +30,11 @@ async def list_workflows() -> list[dict[str, Any]]:
 
 @tool
 async def describe_workflow(name: str) -> dict[str, Any]:
-    """Describe one hosted workflow's tiered configuration contract."""
+    """Describe one hosted workflow's tiered configuration contract.
+
+    Client callers see tier-1 interview questions and tier-2 defaults. Provider-
+    locked tier-3 keys are visible only to the operator role.
+    """
     try:
         return await asyncio.to_thread(service.describe_workflow, name, identity.caller_scope())
     except Exception as exc:
@@ -38,11 +42,22 @@ async def describe_workflow(name: str) -> dict[str, Any]:
 
 
 @tool
-async def validate_config(name: str, config: dict[str, Any]) -> dict[str, Any]:
-    """Validate and normalize a workflow configuration without starting it."""
+async def validate_config(
+    name: str,
+    config: dict[str, Any],
+    client_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate a workflow configuration without starting it.
+
+    Returns ``{"config": …}`` — the normalized configuration to submit verbatim to
+    ``start_run``. Pass the same ``client_context`` you intend to start with and the
+    reply also carries the resolved ``client_slug``: the server-confirmed run owner,
+    which determines the deliverable's brand. Show that echoed value in the
+    pre-flight confirmation block rather than the slug you resolved locally.
+    """
     try:
         return await asyncio.to_thread(
-            service.validate_config, name, config, identity.caller_scope()
+            service.validate_config, name, config, identity.caller_scope(), client_context
         )
     except Exception as exc:
         raise _error(exc) from exc
