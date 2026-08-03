@@ -100,22 +100,23 @@ jobs:
               --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
               --image ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
 
-            FQDN=$(az containerapp show \
-              --name stromy-workflows-mcp \
-              --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
-              --query properties.configuration.ingress.fqdn \
-              --output tsv)
-            HEALTH_URL="https://${FQDN}/health"
-
-            for attempt in $(seq 1 12); do
-              if curl --fail --silent --show-error --max-time 10 "$HEALTH_URL"; then
-                echo ""
-                echo "Health check passed: $HEALTH_URL"
-                exit 0
-              fi
-              echo "Health check attempt ${attempt}/12 failed; retrying in 10s..."
-              sleep 10
-            done
-
-            echo "ERROR: health check failed after 12 attempts: $HEALTH_URL" >&2
-            exit 1
+      - name: Verify deploy — the NEW revision is serving
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        # NOT a plain `curl https://$FQDN/health` loop. `az containerapp update`
+        # returns once the revision is ACCEPTED, and the app FQDN keeps serving
+        # the OUTGOING revision until rollover completes — so such a loop passed
+        # within seconds against the code being replaced (ORG-190, 2026-08-01).
+        #
+        # This repository is public while stromy-org is private, and GitHub does
+        # not allow a public caller to load an action from a private repository
+        # (the run dies at 0s with no jobs and no logs), so the shared
+        # implementation is VENDORED here rather than referenced. The copy is
+        # byte-identical to
+        # stromy-org/.github/actions/verify-aca-deploy/verify.sh and
+        # `scripts/audit-aca-verify-drift.py` in that repo enforces it.
+        # Do not edit the vendored script directly — edit the canonical one.
+        env:
+          APP: stromy-workflows-mcp
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+          IMAGE: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+        run: bash .github/scripts/verify-aca-deploy.sh
