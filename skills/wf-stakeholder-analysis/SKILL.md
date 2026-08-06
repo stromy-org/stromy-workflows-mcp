@@ -114,6 +114,13 @@ the first poll is slow.
   after their confirmation. Continue polling the same `run_id`.
 - **`completed`:** call `get_results(run_id)` and surface every available artifact link,
   distinguishing the durable destination link from any temporary download link.
+  Each `published` artifact carries a `download_url` that **expires** (see
+  `download_url_ttl_seconds`, typically 15 minutes). Say so when you hand one over,
+  and if the user comes back later, call `get_results` again to mint a fresh link
+  rather than re-sending the stale one or reporting the artifact as lost — the
+  artifact is durable, only the link is short-lived. An artifact returned *without*
+  a `download_url` still exists (its `sha256` and `size_bytes` are shown); the link
+  could not be minted this call, so retry `get_results` before escalating.
 - **`failed`:** report the stored error and `run_id`; do not imply a report exists.
 - **`cancelled`:** report that terminal state and stop.
 

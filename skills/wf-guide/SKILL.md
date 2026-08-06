@@ -145,6 +145,8 @@ the plugin carries the `wf-*` guide and client context but never embeds that con
 4. The service starts one isolated run and returns a `run_id`.
 5. If the run pauses for review, inspect the payload and resume the same run.
 6. On completion, receive its durable destination and any temporary download link.
+   Download links are minted per call and expire in minutes; the artifact behind one
+   does not. Re-call `get_results` for a fresh link instead of re-sending an old one.
 
 A slow first response can be an ordinary scale-from-zero start. A failed status is still
 reported explicitly; the guide never treats silence or a queued run as completion.
