@@ -22,7 +22,14 @@ dependencies = [
     "jsonschema>=4.23,<5",
     "psycopg[binary]>=3.2,<4",
     "pydantic-settings>=2.0.0",
+    # Fresh short-lived download URLs for published run artifacts. The account is
+    # passed explicitly from WORKFLOW_STORAGE_ACCOUNT (>=0.6.0), so the facade
+    # never has to export this library's own ASSET_STORE_* env names.
+    "stromy-asset-transport>=0.6.0",
 ]
+
+[tool.uv.sources]
+stromy-asset-transport = { git = "https://github.com/stromy-org/asset-transport.git", tag = "v0.6.0" }
 
 [build-system]
 requires = ["hatchling"]

@@ -1351,6 +1351,11 @@ wheels = [
 ]
 
 [[package]]
+name = "stromy-asset-transport"
+version = "0.6.0"
+source = { git = "https://github.com/stromy-org/asset-transport.git?tag=v0.6.0#806b59c588d70a0c7bbf38c645d6f87924addf0d" }
+
+[[package]]
 name = "stromy-workflows-mcp"
 version = "0.1.0"
 source = { editable = "." }
@@ -1363,6 +1368,7 @@ dependencies = [
     { name = "jsonschema" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
+    { name = "stromy-asset-transport" },
 ]
 
 [package.dev-dependencies]
@@ -1383,6 +1389,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "stromy-asset-transport", git = "https://github.com/stromy-org/asset-transport.git?tag=v0.6.0" },
 ]
 
 [package.metadata.requires-dev]

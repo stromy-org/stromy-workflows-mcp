@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any, Protocol
 
 from . import input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
-from .blobs import AzureStagedReader
+from .blobs import AzureStagedReader, output_container, storage_account
 from .config import settings
 from .contracts import CallerRole, Contract, load_contract
 from .dispatch import (
@@ -27,6 +28,14 @@ class JobClient(Protocol):
     async def prepare(self, run_id: str) -> PreparedJob: ...
 
     async def start(self, template: dict[str, Any]) -> dict[str, Any]: ...
+
+
+logger = logging.getLogger(__name__)
+
+#: Download URLs are minted per authorized read and kept short — a client fetches
+#: results interactively, and a longer-lived URL is an unauthenticated capability
+#: sitting in whatever transcript it was returned in.
+DOWNLOAD_URL_TTL_SECONDS = int(os.environ.get("WORKFLOW_DOWNLOAD_URL_TTL_SECONDS", "900"))
 
 
 def _role(scope: CallerScope) -> CallerRole:
@@ -370,11 +379,52 @@ def finalize_input_session(
 
 
 def get_results(run_id: str, scope: CallerScope) -> dict[str, Any]:
+    """Return a run's outcome, minting FRESH download URLs for its artifacts.
+
+    The registry stores URL-free descriptors, so every download capability is
+    created here — after ``_require_run_scope`` has confirmed this caller owns the
+    run — and expires shortly after. That is the point of the split: a URL stored
+    at publication time would either expire (making a completed run unusable) or
+    be long-lived enough to be a standing unauthenticated capability sitting in
+    whatever transcript it was returned in.
+    """
     with registry.connect() as conn:
         run = _require_run_scope(registry.get_run(conn, run_id), scope)
+    artifacts = dict(run.artifacts_json or {})
+    published = artifacts.get("published")
+    if isinstance(published, list):
+        artifacts["published"] = [_with_download_url(item) for item in published]
     return {
         "run_id": run.run_id,
         "status": run.status,
-        "artifacts": run.artifacts_json or {},
+        "artifacts": artifacts,
         "error": run.error,
     }
+
+
+def _with_download_url(descriptor: Any) -> Any:
+    """Attach a fresh, short-lived read URL to one stored descriptor.
+
+    A descriptor that cannot be minted is returned WITHOUT a URL rather than
+    raising: one unreachable artifact must not make the whole result unreadable,
+    and the client can still see the artifact exists, its digest, and its size.
+    """
+    if not isinstance(descriptor, dict):
+        return descriptor
+    blob_key = descriptor.get("blob_key")
+    if not isinstance(blob_key, str) or not blob_key:
+        return descriptor
+    enriched = dict(descriptor)
+    try:
+        from stromy_asset_transport.publication import mint_download_url
+
+        enriched["download_url"] = mint_download_url(
+            blob_key=blob_key,
+            account=storage_account(),
+            container=descriptor.get("container") or output_container(),
+            ttl_seconds=DOWNLOAD_URL_TTL_SECONDS,
+        )
+        enriched["download_url_ttl_seconds"] = DOWNLOAD_URL_TTL_SECONDS
+    except Exception as exc:  # noqa: BLE001 - one bad artifact must not sink the read
+        logger.error("could not mint a download URL for %s: %s", blob_key, exc)
+    return enriched

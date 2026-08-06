@@ -61,7 +61,13 @@ class UploadUrlMinter(Protocol):
     def mint(self, *, blob_key: str, media_type: str) -> tuple[str, datetime]: ...
 
 
-def input_account() -> str:
+def storage_account() -> str:
+    """The one data-plane account. Inputs and outputs are containers on it.
+
+    Not ``input_account``: the same account holds the output container, and a
+    name implying otherwise invites a second, divergent accessor for the
+    outbound half.
+    """
     account = os.environ.get("WORKFLOW_STORAGE_ACCOUNT", "").strip()
     if not account:
         raise BlobError("WORKFLOW_STORAGE_ACCOUNT is unset; uploads have nowhere to go")
@@ -72,11 +78,15 @@ def input_container() -> str:
     return os.environ.get("WORKFLOW_INPUT_CONTAINER", "workflow-inputs").strip()
 
 
+def output_container() -> str:
+    return os.environ.get("WORKFLOW_OUTPUT_CONTAINER", "workflow-outputs").strip()
+
+
 class AzureUploadUrlMinter:
     """Mints per-blob write SAS URLs signed with a user-delegation key."""
 
     def __init__(self, *, account: str | None = None, container: str | None = None) -> None:
-        self._account = account or input_account()
+        self._account = account or storage_account()
         self._container = container or input_container()
         try:
             from azure.identity import DefaultAzureCredential  # noqa: PLC0415
@@ -127,7 +137,7 @@ class AzureStagedReader:
     """Reads staged bytes back for content verification at finalization."""
 
     def __init__(self, *, account: str | None = None, container: str | None = None) -> None:
-        self._account = account or input_account()
+        self._account = account or storage_account()
         self._container_name = container or input_container()
         try:
             from azure.identity import DefaultAzureCredential  # noqa: PLC0415
