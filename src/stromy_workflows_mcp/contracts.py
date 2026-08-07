@@ -100,6 +100,24 @@ class Contract:
     schema: dict[str, Any]
     keys: dict[str, ConfigKey]
 
+    def summarize(self, role: CallerRole) -> dict[str, Any]:
+        """Enough to CHOOSE a workflow; ``describe`` carries enough to configure one.
+
+        Discovery used to return the full contract for every visible workflow, which
+        made ``describe_workflow`` a strict subset of ``list_workflows`` — so a skill
+        instructed to call ``describe`` first never had a reason to, and the catalog
+        listing grew with the square of the estate.
+        """
+        return {
+            "workflow": self.workflow,
+            "description": self.schema.get("description", ""),
+            "questions": [
+                key.ask
+                for key in sorted(self.keys.values(), key=lambda item: item.name)
+                if key.tier == 1 and key.ask
+            ],
+        }
+
     def describe(self, role: CallerRole) -> dict[str, Any]:
         keys = [key for key in self.keys.values() if role is CallerRole.OPERATOR or key.tier != 3]
         return {

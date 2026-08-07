@@ -60,7 +60,8 @@ folder to choose and none to ask for. Two things follow:
 ## Interview and configuration
 
 1. Call `describe_workflow(name="stakeholder_analysis_workflow")`. Treat the returned
-   contract as authoritative; do not rely on remembered fields.
+   contract as authoritative; do not rely on remembered fields. `list_workflows`
+   returns only a chooser's summary — it is not a substitute for this call.
 2. Ask every visible tier-1 question whose answer is not already present in the user's
    request. Group compatible questions into one short structured interview. Today that
    is one question: the decision or proposed change being assessed, which must be
@@ -72,12 +73,32 @@ folder to choose and none to ask for. Two things follow:
    model tiers, chunking, retries, internal stages, or budget caps. The client's brand
    is **derived server-side** from the run owner, so do not ask for it or submit it —
    still say which client you resolved, so a wrong overlay is visible to the user.
-4. Re-emit the full proposed configuration in this plain Markdown block on every
-   revision:
+4. Call `validate_config` **before** you show the user anything to approve, passing
+   both the config and the client context you intend to start with:
+
+   ```
+   validate_config(
+     name="stakeholder_analysis_workflow",
+     config=…,
+     client_context={"client_slug": "<resolved slug>"},
+   )
+   ```
+
+   The reply is `{"config": …, "client_slug": …}`. If validation fails, explain the
+   field-level issue, revise, and validate again. Only a normalized, validated config
+   may be started.
+
+   The returned `client_slug` is the **server's** resolved run owner. Show that value
+   in the block below, not the slug you resolved from the overlay. The owner decides
+   whose brand the deliverable ships in, so it is the one line the user most needs to
+   be true — and until the server echoes it back, it is only your local guess. If it
+   differs from the overlay you resolved, stop and say so rather than continuing.
+5. Re-emit the full proposed configuration in this plain Markdown block on every
+   revision, using the values `validate_config` returned:
 
    ```markdown
    ## Stakeholder-analysis run
-   - Client: …
+   - Client: … (server-confirmed run owner)
    - Decision or change: …
    - Report title: …
    - Deliverables: …
@@ -90,14 +111,12 @@ folder to choose and none to ask for. Two things follow:
    submitted, re-emit it in full on every revision, and require an explicit go-ahead.
    Never emit it as an artifact — an editable canvas has no notion of "the exact bytes
    I am about to submit", which is the whole point of this step.
-5. Call `validate_config(name="stakeholder_analysis_workflow", config=…)`. If validation
-   fails, explain the field-level issue, revise the same summary, and validate again.
-   Only a normalized, validated config may be started.
 6. Ask for a final go-ahead immediately before starting because the next call launches
    paid hosted compute. On confirmation call `start_run` with:
    - the workflow name;
-   - the normalized config;
-   - `client_context={"client_slug": "<resolved slug>"}`;
+   - the `config` object `validate_config` returned, verbatim;
+   - `client_context={"client_slug": "<the client_slug validate_config returned>"}` —
+     the same owner the user approved, never a re-derived one;
    - a stable idempotency key for this confirmed submission, so a retry cannot create a
      duplicate run.
 

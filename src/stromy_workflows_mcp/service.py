@@ -51,7 +51,7 @@ def _require_run_scope(run: registry.Run | None, scope: CallerScope) -> registry
 
 
 def list_workflows(scope: CallerScope) -> list[dict[str, Any]]:
-    return [load_contract(name).describe(_role(scope)) for name in visible_workflows(scope)]
+    return [load_contract(name).summarize(_role(scope)) for name in visible_workflows(scope)]
 
 
 def describe_workflow(name: str, scope: CallerScope) -> dict[str, Any]:
@@ -74,10 +74,32 @@ def _validated(
     return contract, contract.validate(config, _role(scope))
 
 
-def validate_config(name: str, config: dict[str, Any], scope: CallerScope) -> dict[str, Any]:
-    """Caller-facing normalized config: provider-locked keys withheld."""
+def validate_config(
+    name: str,
+    config: dict[str, Any],
+    scope: CallerScope,
+    client_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Caller-facing normalized config, plus the identity it would run under.
+
+    ``config`` has provider-locked keys withheld (``Contract.project``).
+
+    When ``client_context`` is supplied this also resolves and returns the run
+    OWNER, applying the same two authorization gates ``start_run`` applies. That
+    makes this call a true dry run of the submission rather than a check of its
+    configuration half. It exists because the owner is the one value a pre-flight
+    confirmation block could not verify: every other line came back from here,
+    while the client identity — which decides whose brand ships — came from
+    whatever the calling agent resolved locally, and nothing checked it until the
+    billed call. An echoed owner is a server answer the user can actually confirm.
+    """
     contract, effective = _validated(name, config, scope)
-    return contract.project(effective, _role(scope))
+    resolved: dict[str, Any] = {"config": contract.project(effective, _role(scope))}
+    if client_context is not None:
+        owner = require_client(scope, client_context.get("client_slug"))
+        require_entitled(name, owner, scope)
+        resolved["client_slug"] = owner
+    return resolved
 
 
 def _persist_start(
@@ -186,7 +208,10 @@ async def start_run(
     client_slug = require_client(scope, context.get("client_slug"))
     # Checked against the RESOLVED owner, not the caller's union of roles: a caller
     # holding two client roles must not start a run owned by the unentitled one.
-    # validate_config's own gate is union-scoped and cannot make this distinction.
+    # ``require_visible``'s gate is union-scoped and cannot make this distinction.
+    # ``validate_config`` runs these same two gates when given a client_context, so
+    # the dry run and the billed call agree — but it is optional there and
+    # authoritative here, so this stays the enforcement point.
     require_entitled(name, client_slug, scope)
     # The INTERNAL shape: the runner needs the provider pins, so this must not go
     # through the caller-facing projection.

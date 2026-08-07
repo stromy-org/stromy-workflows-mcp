@@ -63,7 +63,7 @@ def _v2_row(**overrides: Any) -> dict[str, Any]:
             "attempt_no": 1,
             "dispatch_id": "33333333-3333-3333-3333-333333333333",
             "lease_owner": "runner-7",
-            "lease_until": NOW,
+            "lease_expires_at": NOW,
             "progress_json": {"current_node": "scoring", "completed_nodes": ["load"]},
             "error_json": None,
             "heartbeat_at": NOW,
@@ -100,8 +100,10 @@ def test_feature_unavailable_is_not_a_version_mismatch() -> None:
 def test_v1_row_maps_with_data_plane_fields_absent() -> None:
     run = registry.Run.from_row(_v1_row())
     assert run.workspace_id is None
-    assert run.attempt_no is None
     assert run.progress_json is None
+    # ``attempt_no`` defaults rather than nulling, so it is NOT the v1 marker —
+    # ``workspace_id`` is (NOT NULL from migration 0002 onward).
+    assert run.attempt_no == 1
 
 
 def test_v2_row_maps_without_choking_on_new_columns() -> None:

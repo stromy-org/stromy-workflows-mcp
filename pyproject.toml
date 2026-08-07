@@ -21,15 +21,16 @@ dependencies = [
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
     "psycopg[binary]>=3.2,<4",
+    # The shared run-registry lifecycle (ORG-PLAN-155). BASE install only —
+    # no `executor`/`rabbitmq` extras, so the facade acquires neither
+    # LangGraph nor aio-pika. The dependency-audit step asserts that.
+    "workflow-runtime-core",
     "pydantic-settings>=2.0.0",
     # Fresh short-lived download URLs for published run artifacts. The account is
     # passed explicitly from WORKFLOW_STORAGE_ACCOUNT (>=0.6.0), so the facade
     # never has to export this library's own ASSET_STORE_* env names.
     "stromy-asset-transport>=0.6.0",
 ]
-
-[tool.uv.sources]
-stromy-asset-transport = { git = "https://github.com/stromy-org/asset-transport.git", tag = "v0.6.0" }
 
 [build-system]
 requires = ["hatchling"]
@@ -66,3 +67,13 @@ select = ["E", "F", "I", "UP", "ASYNC", "B", "PERF", "S"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # `assert` is the pytest idiom
+
+[tool.uv.sources]
+# Public repo: this repo is public too, and a public caller cannot read a
+# private one — an exact PUBLIC tag is what removes the build-credential
+# problem entirely (ORG-PLAN-155 locked decision 3).
+workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-core.git", tag = "v0.3.3" }
+# Result retrieval mints a read URL per authorized call; the account and container
+# are passed EXPLICITLY (>=0.6.0), because this library's own ASSET_STORE_ACCOUNT
+# names the brand-asset account rather than the workflow one.
+stromy-asset-transport = { git = "https://github.com/stromy-org/asset-transport.git", tag = "v0.6.0" }

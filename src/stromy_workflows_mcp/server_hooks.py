@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from . import registry, upload_page
+from . import migrations, registry, upload_page
 from .config import settings
 
 if TYPE_CHECKING:
@@ -42,12 +42,16 @@ def register(mcp: FastMCP) -> None:
                 {"status": "error", "error": "STROMY_PG_DSN is unset"}, status_code=503
             )
 
-        def check() -> int:
+        def check() -> tuple[int, int]:
             with registry.connect() as conn:
-                return registry.schema_version(conn)
+                # Both chains, because this facade needs both: the core's for the
+                # run lifecycle, its own for the upload tables. Reporting only the
+                # core version would let a deployment look healthy while every
+                # upload call fails at its first write.
+                return registry.schema_version(conn), migrations.require_applied(conn)
 
         try:
-            version = await asyncio.to_thread(check)
+            version, uploads_version = await asyncio.to_thread(check)
         except Exception as exc:
             return JSONResponse({"status": "error", "error": str(exc)}, status_code=503)
         return JSONResponse(
@@ -55,6 +59,7 @@ def register(mcp: FastMCP) -> None:
                 "status": "ok",
                 "service": "stromy-workflows-mcp",
                 "schema_version": version,
+                "uploads_schema_version": uploads_version,
             }
         )
 

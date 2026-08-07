@@ -9,6 +9,18 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /app
 
+# `workflow-runtime-core` is pinned as a git+https dependency on an exact tag
+# (ORG-PLAN-155 locked decision 4), and uv shells out to `git` to fetch it.
+# python:3.13-slim ships no git binary, so without this the build fails with
+# "Git executable not found" — but only once a git-sourced dependency exists,
+# which is why this image built fine until Phase A added the first one.
+#
+# Builder stage only: the runtime stage copies the resolved /app/.venv, so the
+# final image still carries no git and no build toolchain.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 

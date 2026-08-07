@@ -19,7 +19,7 @@ from stromy_workflows_mcp.contracts import (
     ContractError,
     load_contract,
 )
-from stromy_workflows_mcp.scoping import CallerScope, resolve_scope
+from stromy_workflows_mcp.scoping import CallerScope, require_client, resolve_scope
 
 
 async def test_server_exposes_workflow_lifecycle_tools(client):
@@ -457,7 +457,7 @@ def _tier3_names() -> set[str]:
 
 
 def test_client_validate_config_withholds_provider_locked_keys() -> None:
-    seen = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _CLIENT)
+    seen = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _CLIENT)["config"]
     assert not (_tier3_names() & set(seen)), "tier-3 keys leaked to a client caller"
     # The caller still gets everything that IS theirs.
     assert seen["decision_summary"] == _MINIMAL["decision_summary"]
@@ -466,7 +466,7 @@ def test_client_validate_config_withholds_provider_locked_keys() -> None:
 
 def test_operator_validate_config_still_shows_provider_locked_keys() -> None:
     """The operator owns the estate; withholding pins from them is not the goal."""
-    seen = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _OPERATOR)
+    seen = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _OPERATOR)["config"]
     assert _tier3_names() <= set(seen)
     assert seen["deliverable_author_max_tokens"] == 16000
 
@@ -492,3 +492,82 @@ def test_client_cannot_select_another_clients_brand() -> None:
         )
     assert exc.value.code == "tier3_forbidden"
     assert exc.value.keys == ["brand_slug"]
+
+
+def test_operator_must_name_the_run_owner() -> None:
+    """A tenant slug is never a default — the deliverable's brand rides on this.
+
+    ``require_client`` used to answer ``requested or "stromy"`` for the operator, so
+    an omitted ``client_context`` produced a Stromy-branded deliverable for a run the
+    caller believed belonged to someone else. Silent and plausible is the worst
+    failure shape for an identity, so it now fails closed.
+    """
+    with pytest.raises(PermissionError) as exc:
+        require_client(_OPERATOR, None)
+    assert "client_slug is required" in str(exc.value)
+
+
+def test_operator_may_still_name_any_client() -> None:
+    """Fail-closed is not the same as locked down: cross-brand override survives."""
+    assert require_client(_OPERATOR, "dukestrategies") == "dukestrategies"
+
+
+def test_a_client_with_one_role_still_needs_no_explicit_slug() -> None:
+    """The unambiguous client case is inference, not a substituted default."""
+    assert require_client(CallerScope(frozenset({"dukestrategies"})), None) == "dukestrategies"
+
+
+def test_validate_config_echoes_the_resolved_run_owner(monkeypatch) -> None:
+    """The owner is the one pre-flight value the caller cannot verify for itself.
+
+    Every other line of a confirmation block comes back from this call; the client
+    identity came from whatever the calling agent resolved locally, and nothing
+    checked it until the billed one. Echoing the server's answer closes that.
+    """
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    scope = CallerScope(frozenset({"dukestrategies"}))
+    reply = service.validate_config(
+        "stakeholder_analysis_workflow", _MINIMAL, scope, {"client_slug": "dukestrategies"}
+    )
+    assert reply["client_slug"] == "dukestrategies"
+    assert reply["config"]["decision_summary"] == _MINIMAL["decision_summary"]
+
+
+def test_validate_config_omits_the_owner_when_no_context_is_given() -> None:
+    """Owner resolution is opt-in: a pure config check must not require an identity."""
+    reply = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _CLIENT)
+    assert "client_slug" not in reply
+
+
+def test_validate_config_applies_the_same_owner_gate_as_start_run(monkeypatch) -> None:
+    """A dry run that skipped the owner gate would greenlight a call start_run rejects."""
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    scope = CallerScope(frozenset({"dukestrategies", "amaris"}))
+    with pytest.raises(PermissionError):
+        service.validate_config(
+            "stakeholder_analysis_workflow", _MINIMAL, scope, {"client_slug": "amaris"}
+        )
+
+
+def test_list_workflows_summarizes_rather_than_dumping_every_contract(monkeypatch) -> None:
+    """``describe_workflow`` must add something, or a skill told to call it never will."""
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    scope = CallerScope(frozenset({"dukestrategies"}))
+    (listed,) = service.list_workflows(scope)
+    assert set(listed) == {"workflow", "description", "questions"}
+    assert "keys" not in listed
+    # The summary still says what the workflow will ask, so it can be chosen.
+    assert listed["questions"] == [
+        "What decision or proposed change should the stakeholder analysis assess?"
+    ]
+    described = service.describe_workflow("stakeholder_analysis_workflow", scope)
+    assert described["keys"], "describe must carry the tiered contract list cannot"

@@ -63,9 +63,26 @@ def resolve_scope(
 
 
 def require_client(scope: CallerScope, requested: str | None) -> str:
-    """Resolve one run owner, rejecting cross-client or ambiguous requests."""
+    """Resolve one run owner, rejecting cross-client, ambiguous, or implied requests.
+
+    The owner is not bookkeeping: the runner derives the run's ``brand_slug`` from
+    it, so this string decides whose brand the deliverable ships in. Identity-shaped
+    resolution therefore fails closed — it never substitutes a literal tenant slug
+    for an answer the caller did not give. An operator may name *any* client (the
+    deliberate cross-brand override), but must name one; the previous
+    ``requested or "stromy"`` silently produced a Stromy-branded deliverable for a
+    run the caller believed was someone else's.
+
+    The cron path never reaches here — ``runtime.scheduled`` registers runs with no
+    owner at all, which leaves ``brand_slug`` null and fails the brand gate visibly.
+    """
     if scope.unrestricted:
-        return _slug(requested or "stromy")
+        if not requested:
+            raise PermissionError(
+                "client_slug is required: it selects the run owner, which determines "
+                "the deliverable's brand, and an operator implies no single client"
+            )
+        return _slug(requested)
     if requested:
         slug = _slug(requested)
         if slug not in scope.client_slugs:
