@@ -1347,7 +1347,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=3.4.4" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "workflow-runtime-core", git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.1.3" },
 ]
