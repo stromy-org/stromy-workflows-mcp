@@ -71,6 +71,21 @@ jobs:
             type=sha,prefix=sha-,format=long
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Mint stromy-ci App token (clone private internal libs)
+        # continue-on-error: on a PUBLIC satellite the org App secrets are not
+        # visible; the mint fails, the build secret is empty, and the
+        # Dockerfile's `if -s` guard skips the URL rewrite — an all-public
+        # dependency set still builds. A private-dep public satellite must
+        # vendor its own auth (see stromy-workflows-mcp).
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Build and push image
         if: steps.preflight.outputs.oidc_ready == 'true'
         uses: docker/build-push-action@v6
@@ -81,6 +96,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          secrets: |
+            internal_libs_pat=${{ steps.app-token.outputs.token }}
 
       - name: Azure login (OIDC)
         if: steps.preflight.outputs.oidc_ready == 'true'

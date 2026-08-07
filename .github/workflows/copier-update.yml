@@ -51,7 +51,10 @@ jobs:
 
       - name: Ensure scheduled-routine label exists
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # In-repo issue/label writes use the workflow's own token — the
+          # permissions block grants it; the stromy-ci App deliberately lacks
+          # Issues permission (verified 2026-08-07: createIssue 403'd).
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Idempotent: creates the label if a satellite has never had one
@@ -148,7 +151,10 @@ jobs:
       - name: File conflict tracking issue
         if: steps.update.outputs.conflict == 'true'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # In-repo issue/label writes use the workflow's own token — the
+          # permissions block grants it; the stromy-ci App deliberately lacks
+          # Issues permission (verified 2026-08-07: createIssue 403'd).
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TITLE="copier update: merge conflicts need manual reconciliation"
