@@ -12,7 +12,14 @@ authors = [{ name = "William Masquelier", email = "william.masquelier@stromy.com
 # never by the template rewriting this list.
 dependencies = [
     "azure-identity>=1.19,<2",
-    "fastmcp>=3.0.0",
+    # Floor is >=3.4.4, NOT >=3.0.0: fastmcp 3.4.3 shipped a Host/Origin guard for
+    # DNS-rebinding protection (PrefectHQ/fastmcp#4405) whose defaults 403 the
+    # cross-origin dynamic client registration a hosted MCP client performs behind
+    # a reverse proxy (ACA ingress); 3.4.4 exists to undo exactly that (#4439).
+    # A server that resolves onto 3.4.3 cannot complete OAuth at all — it 403s
+    # POST /register and POST /consent before the account picker appears, which
+    # reads as an auth bug but is a transport one. Keep the floor above it.
+    "fastmcp>=3.4.4",
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
     "psycopg[binary]>=3.2,<4",

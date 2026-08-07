@@ -7,9 +7,6 @@ PACKAGE_SLUG="stromy-workflows-mcp"
 GITHUB_REPO="stromy-workflows-mcp"
 ENABLE_OAUTH="true"
 AZURE_REGION="northeurope"
-# Must match default_location in stromy-org/terraform's terraform.tfvars. When AZURE_REGION
-# equals this, location is omitted from the fragment so the server inherits the terraform default.
-DEFAULT_REGION="westeurope"
 TERRAFORM_REPO="stromy-org/terraform"
 BRANCH="add-mcp/${PACKAGE_SLUG}"
 FRAGMENT_DIR="mcp-servers"
@@ -62,13 +59,13 @@ fi
 # -- Write mcp-servers/<server>.json ---------------------------
 mkdir -p "$TMPDIR/terraform/$FRAGMENT_DIR"
 
-python3 - "$FRAGMENT_PATH" "$PACKAGE_SLUG" "$GITHUB_REPO" "$ENABLE_OAUTH" "$AZURE_REGION" "$DEFAULT_REGION" <<'PY_WRITE_FRAGMENT'
+python3 - "$FRAGMENT_PATH" "$PACKAGE_SLUG" "$GITHUB_REPO" "$ENABLE_OAUTH" "$AZURE_REGION" <<'PY_WRITE_FRAGMENT'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-slug, github_repo, enable_oauth, azure_region, default_region = sys.argv[2:]
+slug, github_repo, enable_oauth, azure_region = sys.argv[2:]
 
 # Current stromy-org/terraform fragment schema (post ORG-PLAN-064 P1):
 # oauth_app manages the Entra app registration, oauth_runtime wires
@@ -82,8 +79,12 @@ if enable_oauth == "true":
     # Durable OAuth sessions via a persistent Azure Files home mount — no Redis,
     # no app code, no extra secrets (ORG-PLAN-073). BENIGN under the cost policy.
     entry["oauth_sessions"] = "files"
-if azure_region != default_region:
-    entry["location"] = azure_region
+# Region is ALWAYS explicit (ORG-205): the terraform fallback is
+# preferred_location, which drifts independently of any constant here, and an
+# implicit region is how one server silently deployed to a region nobody
+# chose. The value must be in terraform's regions.tf registry or the plan
+# fails with a pointer to the placement doctrine.
+entry["location"] = azure_region
 if github_repo != slug:
     entry["github_repo"] = github_repo
 
@@ -111,7 +112,7 @@ Adds \`${PACKAGE_SLUG}\` as \`${FRAGMENT_DIR}/${FRAGMENT_FILE}\`.
 **Config:**
 - \`github_repo\`: \`${GITHUB_REPO}\`
 - \`oauth_app\` / \`oauth_runtime\`: \`${ENABLE_OAUTH}\`
-$([ "$AZURE_REGION" != "$DEFAULT_REGION" ] && echo "- \`location\`: \`${AZURE_REGION}\`" || echo "- \`location\`: default (\`${DEFAULT_REGION}\`)")
+- \`location\`: \`${AZURE_REGION}\` (explicit — org placement doctrine: stromy-org infra-docs/hosting/azure-regions.md)
 
 Provisioned by \`scripts/register-terraform.sh\` from the generated MCP project.
 

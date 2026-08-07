@@ -2,13 +2,21 @@
 #
 # Auth: the org-wide `stromy-ci` GitHub App (secrets CI_APP_ID / CI_APP_PRIVATE_KEY) —
 # the same App every other cross-repo workflow uses, so there is no per-repo PAT to
-# create or expire. The App is installed on all repos with Contents: write, which
-# covers creating a repository_dispatch on stromy-org. See infra-docs/ai/cross-repo-pats.md.
+# create or expire. See infra-docs/ai/cross-repo-pats.md.
 #
 # Public repos (plugins, marketplaces) cannot read the CI_APP secrets — org-secret
 # visibility is private-repos-only, and broadening a Contents:write-on-all-repos key
 # to public repos is a deliberate no. There the token mint is skipped and the bump
-# falls back to stromy-org's daily 04:00 UTC cron (degraded but functional).
+# falls back to stromy-org's sync-on-submodule-bump cron, which is TWICE-WEEKLY
+# (Mon+Thu 04:00 UTC, `0 4 * * 1,4`) — not daily. Staleness there is bounded at ~3 days.
+#
+# The degrade path emits a ::warning:: ANNOTATION rather than a plain log line, and
+# that is the point (ORG-179). The predecessor of this file guarded on a
+# `STROMY_ORG_DISPATCH_TOKEN` that existed nowhere in the org and, finding it absent,
+# printed a note and `exit 0` — so the step went GREEN having sent nothing, for
+# months, on 22 repos. A guard whose skip path reports success is invisible. An
+# annotation surfaces on the run, in the Actions UI, and in the job summary, so
+# "the fast path is off here" is visible without reading the log.
 name: Notify parent on push to main
 
 on:
@@ -34,11 +42,19 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "No stromy-ci App token (public repo without CI_APP access); relying on stromy-org daily cron fallback."
+            echo "::warning title=Parent-bump fast path unavailable::No stromy-ci App token for $REPO. Expected on a PUBLIC repo (org-secret visibility is private-repos-only). The submodule-bumped dispatch was NOT sent; stromy-org's Mon+Thu 04:00 UTC cron will bump the pointer instead, so staleness is bounded at ~3 days. If this repo is PRIVATE, it is missing from the CI_APP_ID / CI_APP_PRIVATE_KEY selected-repos list and the fast path is silently off — see ORG-179."
+            {
+              echo "### Parent-bump fast path: DEGRADED"
+              echo ""
+              echo "No \`stromy-ci\` App token available, so no \`submodule-bumped\` dispatch was sent."
+              echo "The stromy-org pointer will advance on the Mon+Thu 04:00 UTC cron instead."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           gh api repos/stromy-org/stromy-org/dispatches \
             -f event_type=submodule-bumped \
             -F "client_payload[submodule]=$REPO" \
             -F "client_payload[sha]=$SHA"
+          echo "Dispatched submodule-bumped for $REPO@$SHA"
