@@ -266,6 +266,121 @@ async def start_run(
     return run.public()
 
 
+#: Event kind the runner's retention pass writes before it destroys anything. Its
+#: presence on a run means the workspace a retry would inherit is gone.
+_RETENTION_MARK = "retention_started"
+
+
+def _persist_retry(
+    *,
+    parent_id: str,
+    new_run_id: str,
+    template: dict[str, Any],
+    image_tag: str | None,
+    dispatch_id: str | None,
+) -> registry.Run:
+    with registry.connect() as conn:
+        registry.require_data_plane(registry.schema_version(conn), "retry")
+        attempt = registry.create_retry(
+            conn,
+            run_id=parent_id,
+            new_run_id=new_run_id,
+            job_template=template,
+            image_tag=image_tag,
+        )
+        if dispatch_id is not None:
+            registry.set_dispatch(conn, attempt.run_id, dispatch_id)
+            attempt = registry.get_run(conn, attempt.run_id) or attempt
+    return attempt
+
+
+def _refuse_if_workspace_was_reaped(conn: registry.DbConnection, run_id: str) -> None:
+    """Refuse a retry whose workspace retention already deleted.
+
+    The facade has no mount — the durable share is attached to the runner job, and
+    giving this service a share credential to duplicate a check the runner must make
+    anyway would widen its blast radius for nothing. But it can see the one *common*
+    reason a workspace disappears, because retention marks the run before it deletes
+    anything. Catching that here means the client is told "no" instead of getting a
+    new run id that fails minutes later.
+
+    Every other cause of a missing folder is caught by the runner, which refuses to
+    ``mkdir`` a retry's workspace rather than silently starting a full recompute.
+    """
+    if any(event["kind"] == _RETENTION_MARK for event in registry.list_events(conn, run_id)):
+        raise registry.RegistryError(
+            f"run {run_id} has passed retention: the workspace a retry would reuse "
+            "has been deleted. Start a new run instead."
+        )
+
+
+async def retry_run(
+    run_id: str,
+    scope: CallerScope,
+    *,
+    job_client: JobClient | None = None,
+    dispatcher: Dispatcher | None = None,
+) -> dict[str, Any]:
+    """Start the next attempt of a failed run: new run, same workspace.
+
+    Takes no ``client_context``, deliberately. Ownership, workflow and configuration
+    all come from the parent row, so a retry cannot move a run to another client or
+    switch it to a workflow the caller happens to be entitled to. What IS re-checked
+    is the caller: entitlement is resolved now, against the original workflow and the
+    run's recorded owner, so a client whose entitlement was withdrawn cannot rerun
+    the work it used to be allowed to start.
+
+    A fresh job template is rendered rather than the parent's replayed: the template
+    embeds the run id, and this attempt has a new one.
+    """
+    def _authorize() -> registry.Run:
+        with registry.connect() as conn:
+            parent = _require_run_scope(registry.get_run(conn, run_id), scope)
+            require_entitled(parent.workflow, parent.client_slug or "", scope)
+            _refuse_if_workspace_was_reaped(conn, run_id)
+            return parent
+
+    parent = await asyncio.to_thread(_authorize)
+
+    client = job_client or AcaJobClient()
+    attempt_id = registry.new_run_id()
+    prepared = await client.prepare(attempt_id)
+
+    dispatcher = dispatcher or build_dispatcher(client)
+    dispatch_id = new_dispatch_id() if isinstance(dispatcher, QueueDispatcher) else None
+
+    attempt = await asyncio.to_thread(
+        _persist_retry,
+        parent_id=parent.run_id,
+        new_run_id=attempt_id,
+        template=prepared.template,
+        image_tag=prepared.image_tag,
+        dispatch_id=dispatch_id,
+    )
+
+    try:
+        await dispatcher.dispatch(
+            run_id=attempt.run_id, dispatch_id=dispatch_id or "", template=prepared.template
+        )
+    except JobStartError as exc:
+        await asyncio.to_thread(_mark_failed, attempt.run_id, str(exc))
+        raise
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a dispatch failure
+        # Same reasoning as ``start_run``: the row stays. An attempt that exists but
+        # was never dispatched is recoverable by re-enqueueing, and the dispatch id
+        # makes the duplicate a no-op at claim time. Deleting it would also free the
+        # workspace's single live-attempt slot, letting a second retry start against
+        # a workspace the first one may yet be handed.
+        await asyncio.to_thread(_mark_dispatch_failed, attempt.run_id, str(exc))
+        raise DispatchError(
+            f"retry {attempt.run_id} was created but not dispatched: {exc}"
+        ) from exc
+    # Exactly the same projection every other run-returning call uses. The lineage
+    # is already in it, under ``attempt`` — repeating ``retry_of`` at the top level
+    # would give one fact two homes, which is how the two diverge later.
+    return attempt.public()
+
+
 def run_status(run_id: str, scope: CallerScope) -> dict[str, Any]:
     with registry.connect() as conn:
         run = _require_run_scope(registry.get_run(conn, run_id), scope)

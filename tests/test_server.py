@@ -33,6 +33,7 @@ async def test_server_exposes_workflow_lifecycle_tools(client):
         "run_status",
         "list_runs",
         "resume_run",
+        "retry_run",
         "cancel_run",
         "get_results",
     } <= names

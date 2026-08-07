@@ -169,6 +169,26 @@ async def resume_run(run_id: str, resume_payload: Any) -> dict[str, Any]:
 
 
 @tool
+async def retry_run(run_id: str) -> dict[str, Any]:
+    """Start a fresh attempt of a FAILED run, reusing its durable workspace.
+
+    Returns a new ``run_id`` — a retry is a new run with new progress and a new
+    checkpoint, linked to the original through ``attempt``. Whatever completed
+    stages already wrote is reused rather than recomputed, so a retry after a
+    late-stage failure is usually much cheaper than starting over.
+
+    Takes no client context and no config: the owner, the workflow and the
+    configuration all come from the original run. Only a ``failed`` run can be
+    retried — a ``paused`` one resumes (``resume_run``), and a ``completed`` one
+    already has its results (``get_results``).
+    """
+    try:
+        return await service.retry_run(run_id, identity.caller_scope())
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
 async def cancel_run(run_id: str) -> dict[str, Any]:
     """Cancel a queued or paused caller-scoped run."""
     try:

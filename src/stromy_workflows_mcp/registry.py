@@ -29,7 +29,11 @@ from contextlib import contextmanager
 from typing import Any
 
 from workflow_runtime_core import registry as core
-from workflow_runtime_core.exceptions import RegistryError, SchemaVersionMismatch
+from workflow_runtime_core.exceptions import (
+    RegistryError,
+    RetryNotAllowed,
+    SchemaVersionMismatch,
+)
 from workflow_runtime_core.models import RunRecord as Run
 from workflow_runtime_core.schema import (
     SUPPORTED_SCHEMA_MAX,
@@ -52,13 +56,16 @@ __all__ = [
     "SUPPORTED_SCHEMA_MIN",
     "DbConnection",
     "RegistryError",
+    "RetryNotAllowed",
     "Run",
     "SchemaFeatureUnavailable",
     "SchemaVersionMismatch",
     "cancel_run",
     "connect",
+    "create_retry",
     "create_run",
     "get_run",
+    "list_events",
     "list_runs",
     "mark_dispatch_failed",
     "mark_failed",
@@ -157,6 +164,33 @@ def create_run(
 
 def get_run(conn: DbConnection, run_id: str) -> Run | None:
     return core.get_run(conn, run_id)
+
+
+def create_retry(
+    conn: DbConnection,
+    *,
+    run_id: str,
+    new_run_id: str,
+    job_template: dict[str, Any],
+    image_tag: str | None,
+) -> Run:
+    """Mint the next attempt of a failed run. Lineage rules live in the core.
+
+    Named here rather than called as ``core.create_retry`` at the use site for the
+    same reason as the rest of this module: one place to see what the facade touches.
+    """
+    return core.create_retry(
+        conn,
+        run_id=run_id,
+        new_run_id=new_run_id,
+        job_template=job_template,
+        image_tag=image_tag,
+    )
+
+
+def list_events(conn: DbConnection, run_id: str) -> list[dict[str, Any]]:
+    """One run's event trail. Read on the retry path to detect a reaped workspace."""
+    return core.list_events(conn, run_id)
 
 
 def list_runs(
