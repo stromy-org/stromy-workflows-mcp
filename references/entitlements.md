@@ -70,6 +70,23 @@ keeps reading its own history. If the intent is to cut off history too, remove t
 Entra role assignment instead. Drop the `wf-*` skill from the plugin in the same
 change, or Invariant #19 fails.
 
+## Entitlement is re-checked on a retry, not inherited
+
+`retry_run` resolves entitlement **again**, at retry time, against the original
+workflow and the run's recorded owner. So the revocation above has a sharper effect
+than "cannot start new runs": a client whose entitlement was removed also cannot
+*rerun* the work it used to be allowed to start, even though the parent run row is
+still theirs to read.
+
+That is the intended asymmetry. Reading history is run tenancy; spending provider
+budget on a fresh attempt is entitlement, and inheriting the original start's decision
+would let a withdrawn grant keep costing money.
+
+The retry surface takes **no `client_context`** — structurally, not by validation.
+Owner, workflow and configuration all come from the parent row, so there is no
+parameter through which a caller could aim a retry at another client's slug.
+`tests/test_retry_surface.py` asserts both the re-check and the absent parameter.
+
 ## Adding a new workflow
 
 `scripts/check_entitlements.py` fails CI until the new contract has an entry, so the

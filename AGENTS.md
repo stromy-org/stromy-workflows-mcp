@@ -17,6 +17,8 @@ uv run pytest                  # run tests
 uv run ruff check              # lint
 uv run pyright                 # strict type check
 python3 scripts/sync_contracts.py --source-root ../../Stromy --check
+python -m stromy_workflows_mcp.migrations       # apply THIS app's chain (upload tables)
+python -m stromy_workflows_mcp.maintenance      # sweep lapsed upload sessions
 uv add <package>               # add a dependency
 uv run python scripts/sync_skill_stubs.py --server stromy-workflows-mcp-http  # regen PRE-MANIFEST local stubs (org-owned stubs are left as-is)
 uv run python scripts/sync_skill_stubs.py --server stromy-workflows-mcp-http --check  # local check: exit 1 if a pre-manifest stub is stale (NOT run in CI)
@@ -51,8 +53,21 @@ tests/test_auth.py     CHROME — OAuth provider builder tests
 
 - This MCP is client-agnostic. Client identity comes only from verified Entra
   app roles (`client.<slug>` or `operator`), never from tool arguments alone.
-- Stromy owns the run-registry schema. This repo issues DML only and must never
-  introduce schema DDL. `/health` fails on an unsupported `schema_meta.version`.
+- **Two migration chains, one ledger.** `workflow-runtime-core` owns the shared run
+  lifecycle (`runs`, `run_events`, `schema_meta`) and is the only writer of statements
+  against it — `src/stromy_workflows_mcp/registry.py` is a thin adapter with **no SQL**
+  (`test_facade_contains_no_schema_ddl` reads its source and asserts that). This repo
+  owns exactly one thing: the upload tables (`input_sessions`, `input_files`), in its
+  own namespaced chain in `migrations.py`. Never add DDL for a core-owned table here,
+  and never let another service create ours — that arrangement is what produced the
+  ORG-PLAN-155/164 schema fork.
+- **Neither chain is applied by the running server.** `wrc migrate` and
+  `python -m stromy_workflows_mcp.migrations` are operator commands; a server that
+  migrates on boot can move the schema out from under its sibling mid-deploy.
+  `/health` *verifies* both and refuses to serve if either is missing or behind.
+- Supported schema is a **range**, so readers deploy ahead of a migration. A v2-only
+  path against a v1 registry must raise the named `SchemaFeatureUnavailable` /
+  `SchemaVersionMismatch`, never a bare column error in a background worker.
 - Caller config is persisted in Postgres and must never enter the ACA Job start
   template. The template carries server-controlled values plus `--run-id` only.
 - Contracts are authored in Stromy and generated into
@@ -70,7 +85,11 @@ tests/test_auth.py     CHROME — OAuth provider builder tests
 - `fs_roots` stays `["skills"]`. `fs_tools.py` has no `CallerScope` awareness, so
   widening the jail to `components` would serve every contract and the entitlements
   registry itself to any authenticated caller of any role.
-- Resume replays the exact `job_template_json` stored at run creation.
+- Resume replays the exact `job_template_json` stored at run creation. A **retry** does
+  not: it renders a fresh template, because the template embeds the run id and a retry
+  is a new run. `retry_run` takes no `client_context` and no config — owner, workflow
+  and configuration all come from the parent row, so there is no parameter with which
+  to aim a retry at another client's slug. Entitlement is re-resolved at retry time.
 
 ## Adding a component
 

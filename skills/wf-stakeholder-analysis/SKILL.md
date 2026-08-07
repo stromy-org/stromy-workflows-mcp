@@ -127,7 +127,12 @@ Keep the returned `run_id` visible. Poll `run_status(run_id)` with increasing in
 error or explicit `failed` status is not. Do not start a replacement run merely because
 the first poll is slow.
 
-- **`queued` / `running`:** report concise progress and continue polling.
+- **`queued` / `running`:** report concise progress and continue polling. When the
+  response carries a `progress` block, say which stage the run is on rather than
+  "still running" — `progress.node` is the stage it last finished and
+  `progress.nodes_completed` how many are done. `heartbeat_at` is when the runner last
+  reported in; a heartbeat that has not moved for many minutes on a long stage is
+  normal, and is not grounds for starting a replacement run.
 - **`paused`:** present the complete interrupt/questionnaire payload in chat. Let the
   user review or edit it, show the exact resume payload, then call `resume_run` only
   after their confirmation. Continue polling the same `run_id`.
@@ -141,6 +146,16 @@ the first poll is slow.
   a `download_url` still exists (its `sha256` and `size_bytes` are shown); the link
   could not be minted this call, so retry `get_results` before escalating.
 - **`failed`:** report the stored error and `run_id`; do not imply a report exists.
+  The `failure` block, when present, says which stage died (`failure.stage`) and whether
+  the run is worth retrying (`failure.retryable`). If it is, offer `retry_run(run_id)`
+  and explain what that does in plain terms: it starts a **new** run that reuses the
+  work the failed one already completed, so it is usually much quicker and cheaper than
+  starting over. Note the new `run_id` it returns and poll *that* one — the original
+  stays failed, on purpose, as the record of what happened.
+  Only a failed run can be retried. Do not offer it for a `paused` run (that resumes) or
+  a `completed` one (its results are already there). If `retry_run` reports that the run
+  has passed retention, its working files have been cleaned up: say so and offer a fresh
+  `start_run` instead of retrying in a loop.
 - **`cancelled`:** report that terminal state and stop.
 
 Use `list_runs` only to recover a run the user already started or to resolve an explicit
