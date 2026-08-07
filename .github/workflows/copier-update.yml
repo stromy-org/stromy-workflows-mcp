@@ -37,14 +37,14 @@ jobs:
       - name: Generate stromy-ci App token
         id: app-token
         if: ${{ env.CI_APP_ID != '' }}
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CI_APP_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: stromy-org
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
@@ -69,7 +69,7 @@ jobs:
             --force
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Run copier update
         id: update
@@ -130,7 +130,7 @@ jobs:
 
       - name: Open update PR (never auto-merge)
         if: steps.update.outputs.changed == 'true' && steps.update.outputs.conflict == 'false'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.app-token.outputs.token || github.token }}
           branch: chore/copier-update
