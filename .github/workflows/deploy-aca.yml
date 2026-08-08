@@ -47,11 +47,11 @@ jobs:
 
       - name: Checkout
         if: steps.preflight.outputs.oidc_ready == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Log in to GHCR
         if: steps.preflight.outputs.oidc_ready == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -59,12 +59,12 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.preflight.outputs.oidc_ready == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Compute image tags
         if: steps.preflight.outputs.oidc_ready == 'true'
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -79,7 +79,7 @@ jobs:
         # vendor its own auth (see stromy-workflows-mcp).
         if: steps.preflight.outputs.oidc_ready == 'true'
         continue-on-error: true
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ secrets.CI_APP_ID }}
@@ -88,7 +88,7 @@ jobs:
 
       - name: Build and push image
         if: steps.preflight.outputs.oidc_ready == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -101,7 +101,7 @@ jobs:
 
       - name: Azure login (OIDC)
         if: steps.preflight.outputs.oidc_ready == 'true'
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -109,7 +109,7 @@ jobs:
 
       - name: Update Container App image
         if: steps.preflight.outputs.oidc_ready == 'true'
-        uses: azure/cli@v2
+        uses: azure/cli@v3
         with:
           inlineScript: |
             az containerapp update \

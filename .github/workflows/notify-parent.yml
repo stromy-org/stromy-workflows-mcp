@@ -30,7 +30,7 @@ jobs:
       - name: Mint stromy-ci App token
         id: app-token
         continue-on-error: true   # public repos have no CI_APP access -> fall to cron
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CI_APP_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
