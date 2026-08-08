@@ -22,7 +22,7 @@ dependencies = [
     "fastmcp>=3.4.4",
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
-    "psycopg[binary]>=3.2,<4",
+    "psycopg[binary]>=3.3.4,<4",
     # The shared run-registry lifecycle (ORG-PLAN-155). BASE install only —
     # no `executor`/`rabbitmq` extras, so the facade acquires neither
     # LangGraph nor aio-pika. The dependency-audit step asserts that.
