@@ -45,7 +45,7 @@ packages = ["src/stromy_workflows_mcp"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "ruff>=0.8",
+    "ruff>=0.16.2",
     "pyright>=1.1",
 ]
 
