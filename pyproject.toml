@@ -12,6 +12,11 @@ authors = [{ name = "William Masquelier", email = "william.masquelier@stromy.com
 # never by the template rewriting this list.
 dependencies = [
     "azure-identity>=1.19,<2",
+    # Queue dispatch + browser-upload SAS minting (ORG-PLAN-164). Both
+    # authenticate as the facade's managed identity via azure-identity above —
+    # a user-delegation SAS is signed with an Entra key, never the account key.
+    "azure-storage-blob>=12.23,<13",
+    "azure-storage-queue>=12.11,<13",
     # Floor is >=3.4.4, NOT >=3.0.0: fastmcp 3.4.3 shipped a Host/Origin guard for
     # DNS-rebinding protection (PrefectHQ/fastmcp#4405) whose defaults 403 the
     # cross-origin dynamic client registration a hosted MCP client performs behind
@@ -28,6 +33,10 @@ dependencies = [
     # LangGraph nor aio-pika. The dependency-audit step asserts that.
     "workflow-runtime-core",
     "pydantic-settings>=2.0.0",
+    # Fresh short-lived download URLs for published run artifacts. The account is
+    # passed explicitly from WORKFLOW_STORAGE_ACCOUNT (>=0.6.0), so the facade
+    # never has to export this library's own ASSET_STORE_* env names.
+    "stromy-asset-transport>=0.6.0",
 ]
 
 [build-system]
@@ -47,6 +56,13 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.16.2",
     "pyright>=1.1",
+    # The upload-session sweep DELETES rows, and its predicate is what stands
+    # between a lapsed session and a run's provenance. A faked cursor would assert
+    # only that we call our own code, so that one suite runs against a real engine
+    # (ORG-PLAN-164 WS5). It SKIPS where neither STROMY_TEST_PG_DSN nor a Docker
+    # daemon is available, which is why CI is unaffected until a postgres service
+    # is wired into ci.yml.
+    "testcontainers[postgres]>=4.8",
 ]
 
 [tool.pytest.ini_options]
@@ -70,4 +86,8 @@ select = ["E", "F", "I", "UP", "ASYNC", "B", "PERF", "S"]
 # Public repo: this repo is public too, and a public caller cannot read a
 # private one — an exact PUBLIC tag is what removes the build-credential
 # problem entirely (ORG-PLAN-155 locked decision 3).
-workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-core.git", tag = "v0.1.3" }
+workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-core.git", tag = "v0.4.0" }
+# Result retrieval mints a read URL per authorized call; the account and container
+# are passed EXPLICITLY (>=0.6.0), because this library's own ASSET_STORE_ACCOUNT
+# names the brand-asset account rather than the workflow one.
+stromy-asset-transport = { git = "https://github.com/stromy-org/asset-transport.git", tag = "v0.6.0" }

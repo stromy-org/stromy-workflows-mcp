@@ -3,19 +3,39 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from typing import Any, Protocol
 
-from . import registry
+from . import input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
+from .blobs import AzureStagedReader, output_container, storage_account
+from .config import settings
 from .contracts import CallerRole, Contract, load_contract
+from .dispatch import (
+    Dispatcher,
+    DispatchError,
+    QueueDispatcher,
+    build_dispatcher,
+    new_dispatch_id,
+)
 from .entitlements import require_entitled, require_visible, visible_workflows
 from .scoping import CallerScope, require_client
+from .uploads import SESSION_TTL_SECONDS, DeclaredFile
 
 
 class JobClient(Protocol):
     async def prepare(self, run_id: str) -> PreparedJob: ...
 
     async def start(self, template: dict[str, Any]) -> dict[str, Any]: ...
+
+
+logger = logging.getLogger(__name__)
+
+#: Download URLs are minted per authorized read and kept short — a client fetches
+#: results interactively, and a longer-lived URL is an unauthenticated capability
+#: sitting in whatever transcript it was returned in.
+DOWNLOAD_URL_TTL_SECONDS = int(os.environ.get("WORKFLOW_DOWNLOAD_URL_TTL_SECONDS", "900"))
 
 
 def _role(scope: CallerScope) -> CallerRole:
@@ -91,10 +111,13 @@ def _persist_start(
     template: dict[str, Any],
     image_tag: str | None,
     idempotency_key: str | None,
+    dispatch_id: str | None = None,
+    input_handle: str | None = None,
+    scope: CallerScope | None = None,
 ) -> registry.Run:
     with registry.connect() as conn:
-        registry.schema_version(conn)
-        return registry.create_run(
+        version = registry.schema_version(conn)
+        run = registry.create_run(
             conn,
             run_id=run_id,
             workflow=name,
@@ -104,11 +127,71 @@ def _persist_start(
             image_tag=image_tag,
             idempotency_key=idempotency_key,
         )
+        # The row must already know its dispatch id when the message lands, or a
+        # fast runner could claim against a row that has not been told which
+        # dispatch it belongs to — and reject its own message. Recorded inside
+        # the same transaction as the insert, so it is committed before anything
+        # is enqueued.
+        if run.run_id == run_id:
+            # Attach the input set in the SAME transaction as the insert, so a
+            # run can never be dispatched referencing evidence it does not own.
+            # An unowned or unfinalized handle raises here and rolls the whole
+            # run back, rather than leaving a run pointing at nothing.
+            if input_handle is not None and scope is not None:
+                registry.require_data_plane(version, "input sets")
+                session_id = input_sessions.attach_to_run(
+                    conn, handle=input_handle, run_id=run_id, scope=scope
+                )
+                registry.set_input_set(conn, run_id, session_id)
+            if dispatch_id is not None:
+                registry.require_data_plane(version, "queue dispatch")
+                registry.set_dispatch(conn, run_id, dispatch_id)
+            run = registry.get_run(conn, run_id) or run
+    return run
+
+
+HANDLE_PATTERN = "^inputset:[0-9a-f-]+$"
+
+
+def _input_handle(workflow: str, normalized: dict[str, Any]) -> str | None:
+    """Return the ``inputset:`` handle this run carries, if its adapter uses one.
+
+    The key NAME is discovered from the schema — the property whose pattern is
+    the handle grammar — rather than hardcoded. A hardcoded name is what made the
+    first version of this brittle: the key was renamed (``inputs_md_folder`` ->
+    ``input_set``, since the old name described document loading's *derived*
+    output rather than a client's raw upload) and a name-matching lookup would
+    have gone silently None, dropping the attachment with no error anywhere.
+    """
+    schema = load_contract(workflow).schema
+    if schema.get("x-input-adapter") != "inputset":
+        return None
+    properties = schema.get("properties") or {}
+    keys = [
+        name
+        for name, spec in properties.items()
+        if isinstance(spec, dict) and spec.get("pattern") == HANDLE_PATTERN
+    ]
+    if len(keys) != 1:
+        # Zero means the contract declares the adapter but offers no way to pass
+        # a handle; more than one means the run is ambiguous. Both are contract
+        # bugs, and both must be loud rather than silently unattached.
+        raise registry.RegistryError(
+            f"{workflow} declares the inputset adapter but has {len(keys)} "
+            "handle-shaped config keys; expected exactly one"
+        )
+    value = normalized.get(keys[0])
+    return value if isinstance(value, str) and value.startswith("inputset:") else None
 
 
 def _mark_failed(run_id: str, error: str) -> None:
     with registry.connect() as conn:
         registry.mark_failed(conn, run_id, error)
+
+
+def _mark_dispatch_failed(run_id: str, reason: str) -> None:
+    with registry.connect() as conn:
+        registry.mark_dispatch_failed(conn, run_id, reason)
 
 
 async def start_run(
@@ -119,6 +202,7 @@ async def start_run(
     scope: CallerScope,
     *,
     job_client: JobClient | None = None,
+    dispatcher: Dispatcher | None = None,
 ) -> dict[str, Any]:
     context = client_context or {}
     client_slug = require_client(scope, context.get("client_slug"))
@@ -135,6 +219,17 @@ async def start_run(
     run_id = registry.new_run_id()
     client = job_client or AcaJobClient()
     prepared = await client.prepare(run_id)
+
+    dispatcher = dispatcher or build_dispatcher(client)
+    queued = isinstance(dispatcher, QueueDispatcher)
+    dispatch_id = new_dispatch_id() if queued else None
+
+    # A workflow whose input adapter is `inputset` receives its evidence as a
+    # handle, never as a server-side path. The contract's own pattern already
+    # rejects a raw path; this is what turns the accepted handle into an
+    # ownership-checked attachment.
+    input_handle = _input_handle(name, normalized)
+
     run = await asyncio.to_thread(
         _persist_start,
         run_id=run_id,
@@ -144,15 +239,146 @@ async def start_run(
         template=prepared.template,
         image_tag=prepared.image_tag,
         idempotency_key=idempotency_key,
+        dispatch_id=dispatch_id,
+        input_handle=input_handle,
+        scope=scope,
     )
     if run.run_id != run_id:
         return {**run.public(), "idempotent_replay": True}
+
+    # Enqueue only AFTER the row is committed. The reverse order would let a
+    # runner receive a message for a run that does not exist yet.
     try:
-        await client.start(prepared.template)
+        await dispatcher.dispatch(
+            run_id=run_id, dispatch_id=dispatch_id or "", template=prepared.template
+        )
     except JobStartError as exc:
         await asyncio.to_thread(_mark_failed, run_id, str(exc))
         raise
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a dispatch failure
+        # The row is deliberately NOT deleted or failed-terminal: a committed
+        # run that was never dispatched is recoverable by an operator retry,
+        # whereas a deleted row is a run the client was told about and can
+        # never be told anything more about. Re-enqueueing is safe because the
+        # dispatch id makes a duplicate message a no-op at claim time.
+        await asyncio.to_thread(_mark_dispatch_failed, run_id, str(exc))
+        raise DispatchError(f"run {run_id} was created but not dispatched: {exc}") from exc
     return run.public()
+
+
+#: Event kind the runner's retention pass writes before it destroys anything. Its
+#: presence on a run means the workspace a retry would inherit is gone.
+_RETENTION_MARK = "retention_started"
+
+
+def _persist_retry(
+    *,
+    parent_id: str,
+    new_run_id: str,
+    template: dict[str, Any],
+    image_tag: str | None,
+    dispatch_id: str | None,
+) -> registry.Run:
+    with registry.connect() as conn:
+        registry.require_data_plane(registry.schema_version(conn), "retry")
+        attempt = registry.create_retry(
+            conn,
+            run_id=parent_id,
+            new_run_id=new_run_id,
+            job_template=template,
+            image_tag=image_tag,
+        )
+        if dispatch_id is not None:
+            registry.set_dispatch(conn, attempt.run_id, dispatch_id)
+            attempt = registry.get_run(conn, attempt.run_id) or attempt
+    return attempt
+
+
+def _refuse_if_workspace_was_reaped(conn: registry.DbConnection, run_id: str) -> None:
+    """Refuse a retry whose workspace retention already deleted.
+
+    The facade has no mount — the durable share is attached to the runner job, and
+    giving this service a share credential to duplicate a check the runner must make
+    anyway would widen its blast radius for nothing. But it can see the one *common*
+    reason a workspace disappears, because retention marks the run before it deletes
+    anything. Catching that here means the client is told "no" instead of getting a
+    new run id that fails minutes later.
+
+    Every other cause of a missing folder is caught by the runner, which refuses to
+    ``mkdir`` a retry's workspace rather than silently starting a full recompute.
+    """
+    if any(event["kind"] == _RETENTION_MARK for event in registry.list_events(conn, run_id)):
+        raise registry.RegistryError(
+            f"run {run_id} has passed retention: the workspace a retry would reuse "
+            "has been deleted. Start a new run instead."
+        )
+
+
+async def retry_run(
+    run_id: str,
+    scope: CallerScope,
+    *,
+    job_client: JobClient | None = None,
+    dispatcher: Dispatcher | None = None,
+) -> dict[str, Any]:
+    """Start the next attempt of a failed run: new run, same workspace.
+
+    Takes no ``client_context``, deliberately. Ownership, workflow and configuration
+    all come from the parent row, so a retry cannot move a run to another client or
+    switch it to a workflow the caller happens to be entitled to. What IS re-checked
+    is the caller: entitlement is resolved now, against the original workflow and the
+    run's recorded owner, so a client whose entitlement was withdrawn cannot rerun
+    the work it used to be allowed to start.
+
+    A fresh job template is rendered rather than the parent's replayed: the template
+    embeds the run id, and this attempt has a new one.
+    """
+    def _authorize() -> registry.Run:
+        with registry.connect() as conn:
+            parent = _require_run_scope(registry.get_run(conn, run_id), scope)
+            require_entitled(parent.workflow, parent.client_slug or "", scope)
+            _refuse_if_workspace_was_reaped(conn, run_id)
+            return parent
+
+    parent = await asyncio.to_thread(_authorize)
+
+    client = job_client or AcaJobClient()
+    attempt_id = registry.new_run_id()
+    prepared = await client.prepare(attempt_id)
+
+    dispatcher = dispatcher or build_dispatcher(client)
+    dispatch_id = new_dispatch_id() if isinstance(dispatcher, QueueDispatcher) else None
+
+    attempt = await asyncio.to_thread(
+        _persist_retry,
+        parent_id=parent.run_id,
+        new_run_id=attempt_id,
+        template=prepared.template,
+        image_tag=prepared.image_tag,
+        dispatch_id=dispatch_id,
+    )
+
+    try:
+        await dispatcher.dispatch(
+            run_id=attempt.run_id, dispatch_id=dispatch_id or "", template=prepared.template
+        )
+    except JobStartError as exc:
+        await asyncio.to_thread(_mark_failed, attempt.run_id, str(exc))
+        raise
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a dispatch failure
+        # Same reasoning as ``start_run``: the row stays. An attempt that exists but
+        # was never dispatched is recoverable by re-enqueueing, and the dispatch id
+        # makes the duplicate a no-op at claim time. Deleting it would also free the
+        # workspace's single live-attempt slot, letting a second retry start against
+        # a workspace the first one may yet be handed.
+        await asyncio.to_thread(_mark_dispatch_failed, attempt.run_id, str(exc))
+        raise DispatchError(
+            f"retry {attempt.run_id} was created but not dispatched: {exc}"
+        ) from exc
+    # Exactly the same projection every other run-returning call uses. The lineage
+    # is already in it, under ``attempt`` — repeating ``retry_of`` at the top level
+    # would give one fact two homes, which is how the two diverge later.
+    return attempt.public()
 
 
 def run_status(run_id: str, scope: CallerScope) -> dict[str, Any]:
@@ -174,22 +400,43 @@ async def resume_run(
     scope: CallerScope,
     *,
     job_client: JobClient | None = None,
+    dispatcher: Dispatcher | None = None,
 ) -> dict[str, Any]:
+    client = job_client or AcaJobClient()
+    dispatcher = dispatcher or build_dispatcher(client)
+    queued = isinstance(dispatcher, QueueDispatcher)
+    # A resume is a NEW dispatch of an existing run: same run id, same thread,
+    # same workspace, fresh dispatch id. Minting a new one is what lets the
+    # claim reject a redelivery of the *original* start message, which would
+    # otherwise be indistinguishable from this resume.
+    dispatch_id = new_dispatch_id() if queued else None
+
     def _request() -> tuple[registry.Run, dict[str, Any]]:
         with registry.connect() as conn:
             run = _require_run_scope(registry.get_run(conn, run_id), scope)
-            if not run.job_template_json:
+            # The stored template is only needed by the ARM lane; a queue-lane
+            # resume resolves everything from the row, so an event-dispatched
+            # run legitimately has no template to replay.
+            if not queued and not run.job_template_json:
                 raise registry.RegistryError(f"run {run_id} has no stored job template")
             resumed = registry.request_resume(conn, run_id, resume_payload)
-            return resumed, run.job_template_json
+            if dispatch_id is not None:
+                registry.set_dispatch(conn, run_id, dispatch_id)
+            return resumed, run.job_template_json or {}
 
     resumed, template = await asyncio.to_thread(_request)
-    client = job_client or AcaJobClient()
     try:
-        await client.start(template)
+        await dispatcher.dispatch(
+            run_id=run_id, dispatch_id=dispatch_id or "", template=template
+        )
     except JobStartError as exc:
         await asyncio.to_thread(_mark_failed, run_id, str(exc))
         raise
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a dispatch failure
+        # The run stays `queued`: it is genuinely awaiting a runner, and an
+        # operator re-dispatch is safe because the dispatch id de-duplicates.
+        await asyncio.to_thread(_mark_dispatch_failed, run_id, str(exc))
+        raise DispatchError(f"run {run_id} was resumed but not dispatched: {exc}") from exc
     return resumed.public()
 
 
@@ -200,12 +447,124 @@ def cancel_run(run_id: str, scope: CallerScope) -> dict[str, Any]:
     return cancelled.public()
 
 
+def _public_base_url() -> str:
+    """Origin the browser upload page is reachable at.
+
+    Falls back to the OAuth base URL because that is already the facade's own
+    externally-resolvable origin — the one value guaranteed correct wherever
+    this is deployed.
+    """
+    explicit = os.environ.get("WORKFLOW_PUBLIC_BASE_URL", "").strip()
+    return (explicit or settings.oauth_base_url).rstrip("/")
+
+
+def create_input_session(
+    files: list[dict[str, Any]],
+    client_context: dict[str, Any] | None,
+    scope: CallerScope,
+) -> dict[str, Any]:
+    """Open an upload session and return a one-time browser upload link.
+
+    The link — not a set of SAS URLs — is what comes back to the caller. An
+    agent has no filesystem the client's documents live on; a human does. So the
+    capability travels to a browser the person controls, and the bytes go
+    straight from that browser to storage without transiting this facade.
+    """
+    context = client_context or {}
+    client_slug = require_client(scope, context.get("client_slug"))
+    declared = [
+        DeclaredFile(
+            name=str(item.get("name", "")),
+            size_bytes=int(item.get("size_bytes") or 0),
+            media_type=item.get("media_type"),
+        )
+        for item in files
+    ]
+    with registry.connect() as conn:
+        registry.require_data_plane(registry.schema_version(conn), "input sessions")
+        session, token, _accepted = input_sessions.create_session(
+            conn, client_slug=client_slug, files=declared
+        )
+    payload = session.public()
+    # The raw token exists only in this response. It is not stored, not logged,
+    # and cannot be re-derived from the row.
+    payload["upload_url"] = (
+        f"{_public_base_url()}/uploads/{session.session_id}?t={token}"
+    )
+    payload["expires_in_seconds"] = SESSION_TTL_SECONDS
+    return payload
+
+
+def get_input_session(handle: str, scope: CallerScope) -> dict[str, Any]:
+    """Report one caller-owned session's progress. Never returns the token."""
+    session_id = input_sessions.parse_handle(handle)
+    with registry.connect() as conn:
+        session = input_sessions.get_session(conn, session_id, scope)
+    return session.public()
+
+
+def finalize_input_session(
+    handle: str, scope: CallerScope, *, fetch_bytes: Any = None
+) -> dict[str, Any]:
+    """Verify every uploaded object and close the session.
+
+    Idempotent, so the browser page and the agent can both call it without
+    racing to a wrong answer.
+    """
+    session_id = input_sessions.parse_handle(handle)
+    reader = fetch_bytes or AzureStagedReader()
+    with registry.connect() as conn:
+        session = input_sessions.finalize(conn, session_id, scope, fetch_bytes=reader)
+    return session.public()
+
+
 def get_results(run_id: str, scope: CallerScope) -> dict[str, Any]:
+    """Return a run's outcome, minting FRESH download URLs for its artifacts.
+
+    The registry stores URL-free descriptors, so every download capability is
+    created here — after ``_require_run_scope`` has confirmed this caller owns the
+    run — and expires shortly after. That is the point of the split: a URL stored
+    at publication time would either expire (making a completed run unusable) or
+    be long-lived enough to be a standing unauthenticated capability sitting in
+    whatever transcript it was returned in.
+    """
     with registry.connect() as conn:
         run = _require_run_scope(registry.get_run(conn, run_id), scope)
+    artifacts = dict(run.artifacts_json or {})
+    published = artifacts.get("published")
+    if isinstance(published, list):
+        artifacts["published"] = [_with_download_url(item) for item in published]
     return {
         "run_id": run.run_id,
         "status": run.status,
-        "artifacts": run.artifacts_json or {},
+        "artifacts": artifacts,
         "error": run.error,
     }
+
+
+def _with_download_url(descriptor: Any) -> Any:
+    """Attach a fresh, short-lived read URL to one stored descriptor.
+
+    A descriptor that cannot be minted is returned WITHOUT a URL rather than
+    raising: one unreachable artifact must not make the whole result unreadable,
+    and the client can still see the artifact exists, its digest, and its size.
+    """
+    if not isinstance(descriptor, dict):
+        return descriptor
+    blob_key = descriptor.get("blob_key")
+    if not isinstance(blob_key, str) or not blob_key:
+        return descriptor
+    enriched = dict(descriptor)
+    try:
+        from stromy_asset_transport.publication import mint_download_url
+
+        enriched["download_url"] = mint_download_url(
+            blob_key=blob_key,
+            account=storage_account(),
+            container=descriptor.get("container") or output_container(),
+            ttl_seconds=DOWNLOAD_URL_TTL_SECONDS,
+        )
+        enriched["download_url_ttl_seconds"] = DOWNLOAD_URL_TTL_SECONDS
+    except Exception as exc:  # noqa: BLE001 - one bad artifact must not sink the read
+        logger.error("could not mint a download URL for %s: %s", blob_key, exc)
+    return enriched

@@ -143,8 +143,16 @@ the plugin carries the `wf-*` guide and client context but never embeds that con
 2. Review its tier-1 questions and safe tier-2 defaults. Provider controls remain locked.
 3. Validate the full configuration, review its in-chat summary, and explicitly confirm.
 4. The service starts one isolated run and returns a `run_id`.
-5. If the run pauses for review, inspect the payload and resume the same run.
-6. On completion, receive its durable destination and any temporary download link.
+5. While it runs, the status reports which stage it is on and when the runner last
+   checked in, so a long job can be described honestly instead of as "still going".
+6. If the run pauses for review, inspect the payload and resume the same run.
+7. On completion, receive its durable destination and any temporary download link.
+   Download links are minted per call and expire in minutes; the artifact behind one
+   does not. Re-call `get_results` for a fresh link instead of re-sending an old one.
+8. If it fails, a **retry** starts a new run that reuses whatever the failed attempt
+   already finished — cheaper and faster than starting over, and the failed run stays
+   as the record. Retry applies only to a failed run: a paused one resumes, and a
+   completed one already has its results.
 
 A slow first response can be an ordinary scale-from-zero start. A failed status is still
 reported explicitly; the guide never treats silence or a queued run as completion.

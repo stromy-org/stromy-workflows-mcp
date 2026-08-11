@@ -17,9 +17,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from stromy_workflows_mcp.contracts import list_contracts  # noqa: E402
+from stromy_workflows_mcp.contracts import (  # noqa: E402
+    ContractError,
+    list_contracts,
+    load_contract,
+)
 from stromy_workflows_mcp.entitlements import (  # noqa: E402
     EntitlementError,
+    adapter_problems,
     entitlements_path,
     load_entitlements,
 )
@@ -46,6 +51,25 @@ def main() -> int:
         for workflow in sorted(entitled - contracts)
     )
 
+    # Every workflow declares an executable data plane; a client-entitled one
+    # must declare a REAL one (ORG-PLAN-164 WS0).
+    adapters: dict[str, tuple[str | None, str | None]] = {}
+    for workflow in sorted(contracts & entitled):
+        try:
+            contract = load_contract(workflow)
+        except ContractError as exc:
+            problems.append(str(exc))
+            continue
+        problems.extend(
+            adapter_problems(
+                workflow, contract.schema, has_clients=bool(table[workflow])
+            )
+        )
+        adapters[workflow] = (
+            contract.schema.get("x-input-adapter"),
+            contract.schema.get("x-artifact-adapter"),
+        )
+
     if problems:
         print(f"FAIL  workflow entitlements ({len(problems)} problem(s))")
         for problem in problems:
@@ -55,7 +79,11 @@ def main() -> int:
     print(f"PASS  workflow entitlements ({len(contracts)} workflow(s))")
     for workflow in sorted(contracts):
         clients = sorted(table[workflow])
-        print(f"      {workflow}: {', '.join(clients) if clients else '(operator-only)'}")
+        inbound, outbound = adapters.get(workflow, (None, None))
+        print(
+            f"      {workflow}: {', '.join(clients) if clients else '(operator-only)'} "
+            f"[in={inbound} out={outbound}]"
+        )
     return 0
 
 

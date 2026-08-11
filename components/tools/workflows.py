@@ -89,6 +89,59 @@ async def start_run(
 
 
 @tool
+async def create_input_session(
+    files: list[dict[str, Any]],
+    client_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Open an upload session for a workflow that requires client documents.
+
+    Declare each file as ``{"name": "brief.pdf", "size_bytes": 12345}``. Returns
+    an ``inputset:`` handle plus a one-time ``upload_url`` for a browser: give
+    that link to the person who has the documents, since the bytes travel from
+    their browser straight to storage and never through this server or the
+    agent. Accepted types are .md, .txt and .pdf.
+
+    Pass the handle as the workflow's input field once the session is finalized.
+    """
+    try:
+        return await asyncio.to_thread(
+            service.create_input_session, files, client_context, identity.caller_scope()
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
+async def get_input_session(handle: str) -> dict[str, Any]:
+    """Report upload progress for one ``inputset:`` handle the caller owns.
+
+    Never returns the upload token or any storage URL — only per-file status.
+    """
+    try:
+        return await asyncio.to_thread(
+            service.get_input_session, handle, identity.caller_scope()
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
+async def finalize_input_session(handle: str) -> dict[str, Any]:
+    """Verify the uploaded bytes and close an input session.
+
+    Checks each file's real content against what the session declared, then
+    revokes the upload link. Only a finalized handle can be attached to a run.
+    Safe to call more than once.
+    """
+    try:
+        return await asyncio.to_thread(
+            service.finalize_input_session, handle, identity.caller_scope()
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
 async def run_status(run_id: str) -> dict[str, Any]:
     """Return one caller-scoped run, including an HITL interrupt payload."""
     try:
@@ -111,6 +164,26 @@ async def resume_run(run_id: str, resume_payload: Any) -> dict[str, Any]:
     """Resume a paused HITL run using its exact stored job template."""
     try:
         return await service.resume_run(run_id, resume_payload, identity.caller_scope())
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
+async def retry_run(run_id: str) -> dict[str, Any]:
+    """Start a fresh attempt of a FAILED run, reusing its durable workspace.
+
+    Returns a new ``run_id`` — a retry is a new run with new progress and a new
+    checkpoint, linked to the original through ``attempt``. Whatever completed
+    stages already wrote is reused rather than recomputed, so a retry after a
+    late-stage failure is usually much cheaper than starting over.
+
+    Takes no client context and no config: the owner, the workflow and the
+    configuration all come from the original run. Only a ``failed`` run can be
+    retried — a ``paused`` one resumes (``resume_run``), and a ``completed`` one
+    already has its results (``get_results``).
+    """
+    try:
+        return await service.retry_run(run_id, identity.caller_scope())
     except Exception as exc:
         raise _error(exc) from exc
 

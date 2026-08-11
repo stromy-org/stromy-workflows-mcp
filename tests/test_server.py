@@ -33,6 +33,7 @@ async def test_server_exposes_workflow_lifecycle_tools(client):
         "run_status",
         "list_runs",
         "resume_run",
+        "retry_run",
         "cancel_run",
         "get_results",
     } <= names
@@ -268,7 +269,12 @@ async def test_template_injection_guard(monkeypatch) -> None:
     monkeypatch.setattr(service, "_persist_start", fake_persist)
     result = await service.start_run(
         "stakeholder_analysis_workflow",
-        {"decision_summary": sentinel},
+        {
+            "decision_summary": sentinel,
+            # ORG-PLAN-164: evidence arrives as an ownership-checked handle, not
+            # as a server-side path (see the raw-path test below).
+            "input_set": "inputset:11111111-1111-1111-1111-111111111111",
+        },
         {"client_slug": "dukestrategies"},
         None,
         CallerScope(frozenset({"dukestrategies"})),
@@ -279,6 +285,29 @@ async def test_template_injection_guard(monkeypatch) -> None:
     assert sentinel not in json.dumps(captured["template"])
     assert sentinel not in json.dumps(captured["started_template"])
     assert result["status"] == "queued"
+    # The handle reaches _persist_start, which attaches it in the run's own
+    # transaction — a run can never be dispatched referencing evidence it does
+    # not own.
+    assert captured["input_handle"] == "inputset:11111111-1111-1111-1111-111111111111"
+
+
+@pytest.mark.asyncio
+async def test_a_server_side_path_is_no_longer_accepted_as_evidence() -> None:
+    """A raw path would name a folder on a share every runner can see.
+
+    ``input_set`` carries an opaque handle, never a path: the contract pattern is
+    what closes the free-string hole, and the ownership check on the handle is
+    what replaces it. This is also where the handle grammar is actually ENFORCED
+    — the Stromy-side loader declares the pattern but runs no jsonschema, so this
+    boundary is the one that rejects.
+    """
+    with pytest.raises(ConfigRejected) as exc:
+        service.validate_config(
+            "stakeholder_analysis_workflow",
+            {"decision_summary": "x", "input_set": "/mnt/runs/othercli/secrets"},
+            CallerScope(frozenset({"dukestrategies"})),
+        )
+    assert exc.value.code == "schema_invalid"
 
 
 @pytest.mark.asyncio

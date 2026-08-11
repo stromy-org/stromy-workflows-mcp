@@ -14,7 +14,7 @@ executions with server-controlled templates.
 - `list_workflows` (chooser's summary) / `describe_workflow` (tiered contract) /
   `validate_config` (dry run: normalized config + the resolved run owner)
 - `start_run` / `run_status` / `list_runs`
-- `resume_run` / `cancel_run` / `get_results`
+- `resume_run` / `retry_run` / `cancel_run` / `get_results`
 - `fs_list` / `fs_read` for the hosted `wf-*` skills
 
 Tier 1 keys are interview questions, tier 2 keys are caller-overridable

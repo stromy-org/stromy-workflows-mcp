@@ -43,6 +43,12 @@
       "x-pinned": "direct",
       "x-tier": 3
     },
+    "input_set": {
+      "description": "Optional finalized input-set handle (inputset:<uuid>) from create_input_session/finalize_input_session. The runner rehydrates the uploaded documents into the run's raw-inputs folder, where document loading picks them up alongside anything orchestrated sourcing gathers. Tier 2, with no default: absent simply means no client-supplied documents.",
+      "pattern": "^inputset:[0-9a-f-]+$",
+      "type": "string",
+      "x-tier": 2
+    },
     "report_output_formats": {
       "default": [
         "html",
@@ -130,5 +136,7 @@
       "x-tier": 3
     }
   },
-  "workflow": "stakeholder_analysis_workflow"
+  "workflow": "stakeholder_analysis_workflow",
+  "x-artifact-adapter": "stakeholder_exports",
+  "x-input-adapter": "inputset"
 }

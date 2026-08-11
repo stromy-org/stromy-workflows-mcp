@@ -150,5 +150,7 @@
       "type": "object"
     }
   },
-  "workflow": "weekly_intel_workflow"
+  "workflow": "weekly_intel_workflow",
+  "x-artifact-adapter": "operator",
+  "x-input-adapter": "none"
 }
