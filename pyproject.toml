@@ -17,10 +17,17 @@ dependencies = [
     # a user-delegation SAS is signed with an Entra key, never the account key.
     "azure-storage-blob>=12.23,<13",
     "azure-storage-queue>=12.11,<13",
-    "fastmcp>=3.0.0",
+    # Floor is >=3.4.4, NOT >=3.0.0: fastmcp 3.4.3 shipped a Host/Origin guard for
+    # DNS-rebinding protection (PrefectHQ/fastmcp#4405) whose defaults 403 the
+    # cross-origin dynamic client registration a hosted MCP client performs behind
+    # a reverse proxy (ACA ingress); 3.4.4 exists to undo exactly that (#4439).
+    # A server that resolves onto 3.4.3 cannot complete OAuth at all — it 403s
+    # POST /register and POST /consent before the account picker appears, which
+    # reads as an auth bug but is a transport one. Keep the floor above it.
+    "fastmcp>=3.4.4",
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
-    "psycopg[binary]>=3.2,<4",
+    "psycopg[binary]>=3.3.4,<4",
     # The shared run-registry lifecycle (ORG-PLAN-155). BASE install only —
     # no `executor`/`rabbitmq` extras, so the facade acquires neither
     # LangGraph nor aio-pika. The dependency-audit step asserts that.
@@ -47,7 +54,7 @@ packages = ["src/stromy_workflows_mcp"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "ruff>=0.8",
+    "ruff>=0.16.2",
     "pyright>=1.1",
     # The upload-session sweep DELETES rows, and its predicate is what stands
     # between a lapsed session and a run's provenance. A faked cursor would assert

@@ -37,37 +37,85 @@ jobs:
       - name: Generate stromy-ci App token
         id: app-token
         if: ${{ env.CI_APP_ID != '' }}
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CI_APP_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: stromy-org
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
 
+      - name: Ensure scheduled-routine label exists
+        env:
+          # In-repo issue/label writes use the workflow's own token — the
+          # permissions block grants it; the stromy-ci App deliberately lacks
+          # Issues permission (verified 2026-08-07: createIssue 403'd).
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Idempotent: creates the label if a satellite has never had one
+          # opened, updates it (no-op) if it already exists. Without this,
+          # `gh issue create --label` below fails hard on a fresh satellite,
+          # and the PR-creation action's own label step silently drops the
+          # label rather than failing — either way the routine is invisible
+          # to the org's `scheduled-routine` discovery convention.
+          gh label create scheduled-routine \
+            --color ededed \
+            --description "Opened by an unattended scheduled routine (never auto-merged)" \
+            --force
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Run copier update
         id: update
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           git config user.name "stromy-ci[bot]"
           git config user.email "stromy-ci[bot]@users.noreply.github.com"
-          # --skip-answered keeps the recorded answers; --trust runs template _tasks.
-          uvx copier update --trust --skip-answered --defaults || true
-          # Detect merge rejects (copier writes *.rej on conflict) and changes.
+
+          # copier's own clone of the (possibly private) template is a plain
+          # `git clone` over HTTPS — it never sees $GH_TOKEN (that only
+          # authenticates the `gh` CLI), so every run failed with
+          # "fatal: could not read Username for 'https://github.com': No such
+          # device or address". Route the org's HTTPS clones through the App
+          # token instead.
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/stromy-org/".insteadOf "https://github.com/stromy-org/"
+
+          # --skip-answered keeps recorded answers; --trust runs template
+          # _tasks; --conflict rej makes a genuine merge conflict
+          # deterministic (writes .rej files) instead of copier's default
+          # `inline` mode, which leaves conflict markers in place that the
+          # detection below has no reliable way to see.
+          set +e
+          uvx copier update --trust --skip-answered --defaults --conflict rej
+          COPIER_EXIT=$?
+          set -e
+
+          # Detect merge rejects (copier writes *.rej on conflict in --conflict rej mode).
           if find . -name '*.rej' -not -path './.git/*' | grep -q .; then
             echo "conflict=true" >> "$GITHUB_OUTPUT"
+            HAS_REJECTS=true
           else
             echo "conflict=false" >> "$GITHUB_OUTPUT"
+            HAS_REJECTS=false
           fi
+
+          # A non-zero exit with NO .rej files is a genuine failure (auth,
+          # template error, crash) — fail the job instead of swallowing it.
+          # A non-zero exit WITH .rej files is copier's expected "conflicts
+          # found" outcome, which routes to the tracking-issue step below.
+          if [ "$COPIER_EXIT" -ne 0 ] && [ "$HAS_REJECTS" = "false" ]; then
+            echo "::error::copier update exited $COPIER_EXIT with no .rej conflict files present — treating this as a genuine failure, not a mergeable conflict."
+            exit "$COPIER_EXIT"
+          fi
+
           if [ -n "$(git status --porcelain)" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -82,7 +130,7 @@ jobs:
 
       - name: Open update PR (never auto-merge)
         if: steps.update.outputs.changed == 'true' && steps.update.outputs.conflict == 'false'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.app-token.outputs.token || github.token }}
           branch: chore/copier-update
@@ -103,7 +151,10 @@ jobs:
       - name: File conflict tracking issue
         if: steps.update.outputs.conflict == 'true'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # In-repo issue/label writes use the workflow's own token — the
+          # permissions block grants it; the stromy-ci App deliberately lacks
+          # Issues permission (verified 2026-08-07: createIssue 403'd).
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TITLE="copier update: merge conflicts need manual reconciliation"

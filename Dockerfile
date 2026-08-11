@@ -9,20 +9,26 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /app
 
-# `workflow-runtime-core` is pinned as a git+https dependency on an exact tag
-# (ORG-PLAN-155 locked decision 4), and uv shells out to `git` to fetch it.
-# python:3.13-slim ships no git binary, so without this the build fails with
-# "Git executable not found" — but only once a git-sourced dependency exists,
-# which is why this image built fine until Phase A added the first one.
-#
-# Builder stage only: the runtime stage copies the resolved /app/.venv, so the
-# final image still carries no git and no build toolchain.
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y git \
+# git is required to resolve any private git+URL dependency (internal libs).
+# python:slim ships without it. (ORG-109) Concretely here: `workflow-runtime-core`
+# is pinned as a git+https dependency on an exact tag (ORG-PLAN-155 locked
+# decision 4), and uv shells out to `git` to fetch it.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+# Mint-time auth for private internal libs: the stromy-ci App token is passed
+# as a build secret (deploy-aca.yml) and injected via git URL rewrite, scoped to
+# this builder stage only. The `if -s` guard keeps a local `docker build` (no
+# secret) working for any all-public dependency set. Token lands only in the
+# builder's /root/.gitconfig, never in the final image (which COPYs /app only).
+RUN --mount=type=secret,id=internal_libs_pat \
+    if [ -s /run/secrets/internal_libs_pat ]; then \
+        git config --global \
+            url."https://x-access-token:$(cat /run/secrets/internal_libs_pat)@github.com/".insteadOf \
+            "https://github.com/"; \
+    fi; \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY README.md ./
 COPY src/ ./src/
