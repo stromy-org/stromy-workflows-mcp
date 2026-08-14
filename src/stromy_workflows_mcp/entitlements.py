@@ -40,6 +40,27 @@ class EntitlementError(ValueError):
     pass
 
 
+# --- Credential policy (ORG-PLAN-206 C4) -------------------------------------
+#
+# WHOSE KEYS DOES THIS CLIENT'S RUN SPEND? That is a commercial fact, so it lives
+# here in the facade-owned entitlement registry and never in the generated
+# contract, which describes technical requirements only. The same reasoning that
+# put entitlement here rather than in contract JSON puts billing here too.
+#
+# `operator` — the run uses Stromy's own provider keys; Stromy carries the spend.
+#   The default, and the value every pre-C4 entry migrates to, so introducing this
+#   field changes no existing client's billing.
+# `client` — the run resolves the client's OWN registered credentials at execution
+#   start, with every ambient operator key scrubbed first. A client-mode run whose
+#   credentials are unregistered fails at the `credentials` stage rather than
+#   silently falling back to operator keys, which would bill Stromy for a run the
+#   client believed they were paying for.
+POLICY_OPERATOR = "operator"
+POLICY_CLIENT = "client"
+CREDENTIAL_POLICIES = frozenset({POLICY_OPERATOR, POLICY_CLIENT})
+DEFAULT_CREDENTIAL_POLICY = POLICY_OPERATOR
+
+
 # --- Executable data-plane adapters (ORG-PLAN-164 WS0) -----------------------
 #
 # Mirror of Stromy's `stromy/runtime/adapters.py` registry. It is a mirror and
@@ -99,27 +120,67 @@ def entitlements_path() -> Path:
     return (PROJECT_ROOT / settings.entitlements_file).resolve()
 
 
-def _parse(raw: Any) -> dict[str, frozenset[str]]:
-    workflows = raw.get("workflows") if isinstance(raw, dict) else None
-    if not isinstance(workflows, dict):
-        raise EntitlementError("entitlements registry has no 'workflows' object")
-    table: dict[str, frozenset[str]] = {}
-    for name, entry in workflows.items():
-        if not isinstance(entry, dict):
-            raise EntitlementError(f"entitlement entry {name!r} must be an object")
-        clients = entry.get("clients", [])
-        if not isinstance(clients, list):
-            raise EntitlementError(f"entitlement entry {name!r} has a non-list 'clients'")
-        for slug in clients:
-            # Same slug grammar as a verified `client.<slug>` role, so a typo here
-            # can never resolve against a role shape that scoping.py would reject.
-            if not isinstance(slug, str) or not _SLUG_RE.fullmatch(slug):
-                raise EntitlementError(f"entitlement entry {name!r} has invalid slug {slug!r}")
-        table[name] = frozenset(clients)
+def _parse_clients(name: str, clients: Any) -> dict[str, str]:
+    """Read one entry's clients in either registry shape.
+
+    v1 is a LIST of slugs; v2 is an OBJECT keyed by slug whose value carries
+    `credential_policy`. Both are accepted on purpose. The registry is authored in
+    this repo, so a hard cutover would be *possible* — but the deployed artifact and
+    the code roll out independently, and a v1 file meeting a v2-only parser would
+    fail closed and deny every client at once. Reading v1 as "every slug on the
+    default policy" makes that window a no-op instead of an outage, and is exactly
+    the migration default the plan specifies.
+    """
+    if isinstance(clients, list):
+        return {_client_slug(name, slug): DEFAULT_CREDENTIAL_POLICY for slug in clients}
+    if not isinstance(clients, dict):
+        raise EntitlementError(f"entitlement entry {name!r} has a non-list/object 'clients'")
+
+    table: dict[str, str] = {}
+    for slug, config in clients.items():
+        key = _client_slug(name, slug)
+        if config is None:
+            table[key] = DEFAULT_CREDENTIAL_POLICY
+            continue
+        if not isinstance(config, dict):
+            raise EntitlementError(
+                f"entitlement entry {name!r} client {slug!r} must be an object or null"
+            )
+        policy = config.get("credential_policy", DEFAULT_CREDENTIAL_POLICY)
+        # An unrecognised policy is a hard error, never a silent fall back to
+        # `operator`: a typo'd "cient" would otherwise bill Stromy for runs the
+        # registry was edited specifically to bill the client for.
+        if policy not in CREDENTIAL_POLICIES:
+            raise EntitlementError(
+                f"entitlement entry {name!r} client {slug!r} has unknown "
+                f"credential_policy {policy!r} (expected one of "
+                f"{', '.join(sorted(CREDENTIAL_POLICIES))})"
+            )
+        table[key] = policy
     return table
 
 
-def load_entitlements() -> dict[str, frozenset[str]]:
+def _client_slug(name: str, slug: Any) -> str:
+    # Same slug grammar as a verified `client.<slug>` role, so a typo here
+    # can never resolve against a role shape that scoping.py would reject.
+    if not isinstance(slug, str) or not _SLUG_RE.fullmatch(slug):
+        raise EntitlementError(f"entitlement entry {name!r} has invalid slug {slug!r}")
+    return slug
+
+
+def _parse(raw: Any) -> dict[str, dict[str, str]]:
+    workflows = raw.get("workflows") if isinstance(raw, dict) else None
+    if not isinstance(workflows, dict):
+        raise EntitlementError("entitlements registry has no 'workflows' object")
+    table: dict[str, dict[str, str]] = {}
+    for name, entry in workflows.items():
+        if not isinstance(entry, dict):
+            raise EntitlementError(f"entitlement entry {name!r} must be an object")
+        table[name] = _parse_clients(name, entry.get("clients", []))
+    return table
+
+
+def load_entitlements() -> dict[str, dict[str, str]]:
     """Parse the registry, raising on any problem. Callers decide the failure posture."""
     path = entitlements_path()
     try:
@@ -129,7 +190,7 @@ def load_entitlements() -> dict[str, frozenset[str]]:
     return _parse(raw)
 
 
-def _table() -> dict[str, frozenset[str]]:
+def _table() -> dict[str, dict[str, str]]:
     """Fail closed: an unreadable registry denies every client, never allows one."""
     try:
         return load_entitlements()
@@ -140,21 +201,34 @@ def _table() -> dict[str, frozenset[str]]:
 
 def entitled_clients(workflow: str) -> frozenset[str]:
     """Client slugs granted this workflow. Empty means operator-only."""
-    return _table().get(workflow, frozenset())
+    return frozenset(_table().get(workflow, {}))
+
+
+def credential_policy(workflow: str, client_slug: str) -> str:
+    """Whose credentials this client's runs of this workflow spend.
+
+    Defaults to `operator` for an unknown pairing rather than raising: entitlement
+    is decided by the `require_*` gates above, and duplicating that decision here
+    would make the billing answer depend on which of two checks ran first. An
+    unentitled caller never reaches a policy question at all.
+    """
+    return _table().get(workflow, {}).get(client_slug, DEFAULT_CREDENTIAL_POLICY)
 
 
 def visible_workflows(scope: CallerScope) -> list[str]:
     if scope.unrestricted:
         return list_contracts()
     table = _table()
-    return [name for name in list_contracts() if table.get(name, frozenset()) & scope.client_slugs]
+    return [
+        name for name in list_contracts() if frozenset(table.get(name, {})) & scope.client_slugs
+    ]
 
 
 def require_visible(workflow: str, scope: CallerScope) -> None:
     """Discovery gate — any of the caller's roles entitles them (union)."""
     if scope.unrestricted:
         return
-    if not _table().get(workflow, frozenset()) & scope.client_slugs:
+    if not frozenset(_table().get(workflow, {})) & scope.client_slugs:
         raise ContractError(f"unknown workflow {workflow!r}")
 
 
@@ -167,7 +241,7 @@ def require_entitled(workflow: str, client_slug: str, scope: CallerScope) -> Non
     """
     if scope.unrestricted:
         return
-    entitled = _table().get(workflow, frozenset())
+    entitled = frozenset(_table().get(workflow, {}))
     if not entitled & scope.client_slugs:
         # Not visible at all — stay indistinguishable from a nonexistent workflow.
         raise ContractError(f"unknown workflow {workflow!r}")
