@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +14,13 @@ from jsonschema import Draft202012Validator
 from .config import settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+#: Mirror of ``stromy_byok.models.CredentialId``'s grammar, for the same reason
+#: ``entitlements.KNOWN_INPUT_ADAPTERS`` mirrors Stromy's adapter registry: the
+#: value travels here inside a generated contract, so the shape is checkable
+#: from this side alone. A credential id becomes part of a Key Vault secret
+#: name, and Key Vault permits only ``[0-9a-zA-Z-]``.
+_CREDENTIAL_ID_RE = re.compile(r"^[0-9a-zA-Z]([0-9a-zA-Z-]*[0-9a-zA-Z])?$")
 
 
 class CallerRole(StrEnum):
@@ -94,11 +102,157 @@ def _parse_properties(properties: dict[str, Any], prefix: str = "") -> dict[str,
     return keys
 
 
+# --- Credential requirements (ORG-PLAN-206 C4 item 4) ------------------------
+#
+# WHAT a run needs to authenticate, as a technical fact of the workflow. It is
+# deliberately NOT part of the caller's `config`: the caller never submits,
+# overrides or even names a credential. `properties` is the caller's surface;
+# this top-level key is the server's.
+#
+# Requirements are SEMANTIC (a model tier and its capabilities), because the
+# concrete provider behind a tier is a deployment-profile fact that changes
+# without the workflow changing. `resolved_credentials` is the generated
+# concrete projection of those semantics under the deployed profile, and
+# `model_registry_digest` is what lets the runner detect that the profile moved
+# out from under a synchronized contract (C5's `credential_manifest_drift`).
+
+
+@dataclass(frozen=True)
+class ModelRequirement:
+    """One model call this workflow makes, described by tier rather than model."""
+
+    tier: str
+    capabilities: tuple[str, ...] = ()
+    pin: str | None = None
+
+
+@dataclass(frozen=True)
+class CredentialRequirements:
+    """The parsed ``x-credential-requirements`` block, or the undeclared sentinel.
+
+    ``declared`` separates "this contract declares that it needs nothing" from
+    "this contract has not been authored against C6 yet". They look identical as
+    an empty list and mean opposite things to a client-policy run: the first can
+    proceed, the second cannot be run on a client's own keys at all, because the
+    server has no statement of what to inject. Collapsing them would turn a
+    missing declaration into a silent operator-funded run — the exact failure
+    this plane exists to remove.
+    """
+
+    declared: bool = False
+    models: tuple[ModelRequirement, ...] = ()
+    credentials: tuple[str, ...] = ()
+    resolved_credentials: tuple[str, ...] = ()
+    model_registry_digest: str | None = None
+
+    def describe(self, role: CallerRole) -> dict[str, Any]:
+        """What this caller may see of the workflow's credential requirements.
+
+        A client sees the credential IDs they could be asked to register — that
+        is actionable and is what the registration surface keys off. The model
+        tiers, capability sets and pins stay operator-only for the same reason
+        tier-3 config keys do: they describe which provider and profile Stromy
+        runs behind the tier, which is a provider-locked commercial fact rather
+        than something the client configures.
+        """
+        payload: dict[str, Any] = {
+            "declared": self.declared,
+            "credentials": list(self.credentials),
+            "resolved_credentials": list(self.resolved_credentials),
+        }
+        if role is CallerRole.OPERATOR:
+            payload["models"] = [
+                {
+                    "tier": model.tier,
+                    "capabilities": list(model.capabilities),
+                    **({"pin": model.pin} if model.pin else {}),
+                }
+                for model in self.models
+            ]
+            payload["model_registry_digest"] = self.model_registry_digest
+        return payload
+
+
+def _credential_ids(workflow: str, field: str, raw: Any) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ContractError(f"contract {workflow!r} has a non-list {field!r}")
+    ids: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not _CREDENTIAL_ID_RE.fullmatch(value):
+            raise ContractError(
+                f"contract {workflow!r} declares invalid credential id {value!r} in {field!r}"
+            )
+        if value in ids:
+            raise ContractError(
+                f"contract {workflow!r} repeats credential id {value!r} in {field!r}"
+            )
+        ids.append(value)
+    return tuple(ids)
+
+
+def _parse_models(workflow: str, raw: Any) -> tuple[ModelRequirement, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ContractError(f"contract {workflow!r} has a non-list 'models'")
+    models: list[ModelRequirement] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ContractError(f"contract {workflow!r} has a non-object model requirement")
+        tier = entry.get("tier")
+        if not isinstance(tier, str) or not tier:
+            raise ContractError(f"contract {workflow!r} has a model requirement with no 'tier'")
+        capabilities = entry.get("capabilities") or []
+        if not isinstance(capabilities, list) or not all(
+            isinstance(item, str) for item in capabilities
+        ):
+            raise ContractError(
+                f"contract {workflow!r} model tier {tier!r} has non-string 'capabilities'"
+            )
+        pin = entry.get("pin")
+        if pin is not None and not isinstance(pin, str):
+            raise ContractError(f"contract {workflow!r} model tier {tier!r} has a non-string 'pin'")
+        models.append(
+            ModelRequirement(tier=tier, capabilities=tuple(capabilities), pin=pin)
+        )
+    return tuple(models)
+
+
+def _parse_requirements(workflow: str, raw: Any) -> CredentialRequirements:
+    """Parse the top-level ``x-credential-requirements`` block.
+
+    Raises rather than degrading to "no requirements". A malformed block is
+    indistinguishable from an absent one once it is swallowed, and "absent"
+    is precisely the state a client-policy run must refuse — so a parse that
+    fell back to the default would convert a broken generated contract into a
+    quiet operator-funded run.
+    """
+    if raw is None:
+        return CredentialRequirements()
+    if not isinstance(raw, dict):
+        raise ContractError(f"contract {workflow!r} has a non-object 'x-credential-requirements'")
+    digest = raw.get("model_registry_digest")
+    if digest is not None and not isinstance(digest, str):
+        raise ContractError(f"contract {workflow!r} has a non-string 'model_registry_digest'")
+    return CredentialRequirements(
+        declared=True,
+        models=_parse_models(workflow, raw.get("models")),
+        credentials=_credential_ids(workflow, "credentials", raw.get("credentials")),
+        resolved_credentials=_credential_ids(
+            workflow, "resolved_credentials", raw.get("resolved_credentials")
+        ),
+        model_registry_digest=digest,
+    )
+
+
 @dataclass(frozen=True)
 class Contract:
     workflow: str
     schema: dict[str, Any]
     keys: dict[str, ConfigKey]
+    requirements: CredentialRequirements = CredentialRequirements()
 
     def summarize(self, role: CallerRole) -> dict[str, Any]:
         """Enough to CHOOSE a workflow; ``describe`` carries enough to configure one.
@@ -123,6 +277,9 @@ class Contract:
         return {
             "workflow": self.workflow,
             "description": self.schema.get("description", ""),
+            # Reported beside the config contract, never inside it: these are
+            # things the SERVER resolves, not things the caller submits.
+            "credential_requirements": self.requirements.describe(role),
             "keys": [
                 {
                     "name": key.name,
@@ -214,7 +371,17 @@ def load_contract(workflow: str) -> Contract:
     props = raw.get("properties")
     if not isinstance(props, dict):
         raise ContractError(f"contract {workflow!r} has no properties")
-    return Contract(workflow=workflow, schema=raw, keys=_parse_properties(props))
+    return Contract(
+        workflow=workflow,
+        schema=raw,
+        keys=_parse_properties(props),
+        # Parsed off the raw payload explicitly rather than left to be read out
+        # of `schema` ad hoc. `sync_contracts.rendered` preserves every
+        # top-level key except `x-template-paths`, so the block arrives intact;
+        # this is what makes retaining it a tested property of the parser
+        # instead of an accident of the copy step.
+        requirements=_parse_requirements(workflow, raw.get("x-credential-requirements")),
+    )
 
 
 def list_contracts() -> list[str]:
