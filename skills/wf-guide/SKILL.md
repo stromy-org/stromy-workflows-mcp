@@ -157,6 +157,47 @@ the plugin carries the `wf-*` guide and client context but never embeds that con
 A slow first response can be an ordinary scale-from-zero start. A failed status is still
 reported explicitly; the guide never treats silence or a queued run as completion.
 
+## Provider keys: whose account pays
+
+Most runs spend **Stromy's** provider keys and the user needs to do nothing — that is the
+default and it is what every current client is on. Some arrangements instead run on the
+**client's own** keys, so the model and data-provider costs land on their account.
+
+Call `get_credential_status` when the user asks who pays, when a run fails for missing
+credentials, or before walking someone through connecting a key. Read the reply in this
+order:
+
+1. **`credential_policy`.** On `operator`, Stromy pays and there is nothing to connect —
+   say so and stop. Only on `client` does an unconnected key mean an outstanding action.
+2. **`status` per credential.** `registered` and `not_registered` mean what they say.
+   **`unavailable` does NOT mean "no key"** — it means the server cannot read registration
+   state at all. Never tell someone they have no key connected on the strength of it;
+   report that the server can't check right now.
+
+### Connecting, rotating and disconnecting
+
+`create_credential_registration_link` returns a URL the user opens in a browser.
+
+**Never ask for an API key in the chat, and never pass one to a tool.** The link exists so
+the key travels from the user's browser to the vault without passing through the
+conversation, the transcript, or any log. If a user pastes a key to you anyway, tell them
+plainly to treat it as compromised and rotate it at the provider — a key in a chat log is
+a key that has leaked, and pretending otherwise costs them real money.
+
+- **Connect or rotate** — the same call. Registering again replaces the stored key, so a
+  rotation needs no special action and no disconnect first.
+- **Disconnect** — the same call with `action="disconnect"`, which mints a link that
+  disables the stored key. Tell the user this stops *Stromy* using it; if they think it
+  leaked, they must also revoke it at the provider, which is the only thing that stops it
+  being used elsewhere.
+
+Links are **single-use and short-lived** (15 minutes). Reloading the page does not consume
+one — only a successful save does — so a user who mistypes can correct it on the same link.
+An expired or spent link is normal, not an error: mint a fresh one without ceremony.
+
+Hand the link to whoever actually holds the key. That is often not the person in the
+conversation, and the link is designed to be forwarded.
+
 ## Choosing a workflow
 
 <!-- guide-inventory:begin -->

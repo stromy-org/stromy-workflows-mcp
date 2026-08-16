@@ -12,8 +12,10 @@ from stromy_byok import (
     AuditAction,
     AuditEvent,
     GrantAction,
+    NullCredentialStore,
     Subject,
     SubjectKind,
+    UnknownCredentialError,
     mint_grant,
 )
 
@@ -29,7 +31,12 @@ from .dispatch import (
     build_dispatcher,
     new_dispatch_id,
 )
-from .entitlements import require_entitled, require_visible, visible_workflows
+from .entitlements import (
+    credential_policy,
+    require_entitled,
+    require_visible,
+    visible_workflows,
+)
 from .scoping import CallerScope, require_client
 from .uploads import SESSION_TTL_SECONDS, DeclaredFile
 
@@ -617,6 +624,107 @@ def create_credential_registration_link(
         "registration_url": f"{_public_base_url()}/keys?token={grant.token}",
         "expires_in_seconds": DEFAULT_TTL_SECONDS,
     }
+
+
+def credential_status(
+    workflow: str,
+    client_context: dict[str, Any] | None,
+    scope: CallerScope,
+) -> dict[str, Any]:
+    """Report which of a workflow's credentials this client has registered.
+
+    **Existence and metadata only — never a value.** `CredentialReader.exists`
+    answers without reading the secret, and the metadata surfaced here is the
+    non-secret tags this service wrote itself.
+
+    The same four gates as minting, for the same reasons: an unentitled caller
+    must not learn a workflow exists, and the subject is derived from verified
+    roles rather than from anything the caller sends.
+
+    UNPROVISIONED IS NOT UNREGISTERED. With no vault, `NullCredentialStore`
+    answers `False` for every subject — which is indistinguishable from a
+    truthful "not registered" and would render as *"you have not connected a
+    key"* to a client who connected one. The store's provisioning state is
+    therefore reported separately, and each credential reads `unavailable`
+    rather than `not_registered` when it cannot be known.
+    """
+    context = client_context or {}
+    require_visible(workflow, scope)
+    client_slug = require_client(scope, context.get("client_slug"))
+    require_entitled(workflow, client_slug, scope)
+
+    contract = load_contract(workflow)
+    requirements = contract.requirements
+    policy = credential_policy(workflow, client_slug)
+    payload: dict[str, Any] = {
+        "workflow": workflow,
+        "client_slug": client_slug,
+        # Whose keys this client's runs spend. On `operator` the client owes
+        # nothing — reporting an unregistered credential without this would read
+        # as an outstanding action when there is none.
+        "credential_policy": policy,
+        "declared": requirements.declared,
+        "credentials": [],
+    }
+    if not requirements.declared:
+        payload["note"] = (
+            "This workflow has not declared its credential requirements yet, so "
+            "there is nothing to register against it."
+        )
+        return payload
+
+    store = credentials.credential_store()
+    provisioned = not isinstance(store, NullCredentialStore)
+    payload["store_provisioned"] = provisioned
+    subject = Subject(SubjectKind.CLIENT_SLUG, client_slug)
+    drift: list[str] = []
+    entries: list[dict[str, Any]] = []
+    for credential_id in sorted(
+        set(requirements.credentials) | set(requirements.resolved_credentials)
+    ):
+        try:
+            spec = credentials.CATALOGUE.get(credential_id)
+        except UnknownCredentialError:
+            # Reported, not raised: the contract and this catalogue drifting apart
+            # is exactly what C5's manifest check exists to catch, and a status
+            # call that dies on it hides every other credential's real state.
+            drift.append(credential_id)
+            continue
+        entry: dict[str, Any] = {
+            "credential_id": str(spec.credential_id),
+            "provider": spec.provider,
+            "display_name": spec.display_name,
+            "signup_url": spec.signup_url,
+        }
+        if not provisioned:
+            entry["status"] = "unavailable"
+        else:
+            entry["status"] = (
+                "registered" if store.exists(spec.credential_id, subject) else "not_registered"
+            )
+            # `metadata` is on the WRITER protocol, and this facade holds Secrets
+            # Officer so it has one — but the reader protocol is what the store
+            # is typed as, and a read-only backend legitimately lacks it.
+            metadata = getattr(store, "metadata", None)
+            raw_tags = metadata(spec.credential_id, subject) if callable(metadata) else None
+            tags = raw_tags if isinstance(raw_tags, dict) else None
+            if tags:
+                # Non-secret tags this service wrote. Whitelisted rather than
+                # passed through, so a future tag cannot become an accidental
+                # disclosure channel on a client-facing call.
+                entry["last_rotated_at"] = tags.get("rotated_at")
+                entry["validation"] = tags.get("validation")
+        entries.append(entry)
+    payload["credentials"] = entries
+    if drift:
+        payload["catalogue_drift"] = drift
+    if not provisioned:
+        payload["note"] = (
+            "The credential store is not provisioned on this server, so "
+            "registration state cannot be read. This is not the same as having "
+            "no key registered."
+        )
+    return payload
 
 
 def get_input_session(handle: str, scope: CallerScope) -> dict[str, Any]:

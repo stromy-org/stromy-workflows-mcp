@@ -148,6 +148,32 @@ async def create_credential_registration_link(
 
 
 @tool
+async def get_credential_status(
+    workflow: str,
+    client_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Report which of a workflow's credentials this client has registered.
+
+    Returns per-credential status only — never a key, and never any part of one.
+
+    Read ``credential_policy`` first. On ``operator`` the client's runs spend
+    Stromy's keys and there is nothing for them to register; only on ``client``
+    does an unregistered credential mean an outstanding action.
+
+    ``status`` is ``registered``, ``not_registered``, or ``unavailable``.
+    **``unavailable`` is not ``not_registered``** — it means the server cannot
+    read registration state at all, so never tell someone they have no key
+    connected on the strength of it.
+    """
+    try:
+        return await asyncio.to_thread(
+            service.credential_status, workflow, client_context, identity.caller_scope()
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
 async def get_input_session(handle: str) -> dict[str, Any]:
     """Report upload progress for one ``inputset:`` handle the caller owns.
 

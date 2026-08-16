@@ -26,7 +26,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from stromy_byok import build_keys_routes
 
-from . import credentials, migrations, registry, service, upload_page
+from . import credentials, migrations, readiness, registry, service, upload_page
 from .config import settings
 
 if TYPE_CHECKING:
@@ -61,6 +61,13 @@ def register(mcp: FastMCP) -> None:
                 "service": "stromy-workflows-mcp",
                 "schema_version": version,
                 "uploads_schema_version": uploads_version,
+                # Optional-capability state rides along rather than living on a
+                # second endpoint: this is the URL an operator already curls, and
+                # a degraded capability nobody looks at is the failure mode the
+                # declaration exists to remove. It is env reads only, so it costs
+                # nothing on a liveness poll — and a degraded capability keeps
+                # the 200, because degraded is not unhealthy.
+                "readiness": readiness.readiness_report(),
             }
         )
 

@@ -39,6 +39,7 @@ from stromy_byok import (
     CredentialCatalogue,
     CredentialId,
     CredentialOwner,
+    CredentialReader,
     CredentialSpec,
     InMemoryGrantStore,
     NullCredentialStore,
@@ -135,7 +136,7 @@ CATALOGUE = CredentialCatalogue(
 GRANTS: RegistrationGrantStore = InMemoryGrantStore()
 
 _store_lock = threading.Lock()
-_store: object | None = None
+_store: CredentialReader | None = None
 
 
 def key_vault_url() -> str:
@@ -143,7 +144,7 @@ def key_vault_url() -> str:
     return os.environ.get("BYOK_KEY_VAULT_URL", "").strip()
 
 
-def credential_store() -> object:
+def credential_store() -> CredentialReader:
     """The vault-backed store, or a null reader before one is provisioned.
 
     Built once and cached: `DefaultAzureCredential` does its own token caching,
