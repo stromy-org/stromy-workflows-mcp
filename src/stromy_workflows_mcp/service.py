@@ -7,7 +7,17 @@ import logging
 import os
 from typing import Any, Protocol
 
-from . import input_sessions, registry
+from stromy_byok import (
+    DEFAULT_TTL_SECONDS,
+    AuditAction,
+    AuditEvent,
+    GrantAction,
+    Subject,
+    SubjectKind,
+    mint_grant,
+)
+
+from . import credentials, input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
 from .blobs import AzureStagedReader, output_container, storage_account
 from .config import settings
@@ -493,6 +503,120 @@ def create_input_session(
     )
     payload["expires_in_seconds"] = SESSION_TTL_SECONDS
     return payload
+
+
+def _audit(event: AuditEvent) -> None:
+    """Structured, already-redacted lifecycle record. Never carries a value."""
+    logger.info("byok %s", event.action.value, extra={"byok": event.to_dict()})
+
+
+def create_credential_registration_link(
+    workflow: str,
+    credential_id: str,
+    client_context: dict[str, Any] | None,
+    scope: CallerScope,
+    action: str = GrantAction.REGISTER_OR_ROTATE.value,
+) -> dict[str, Any]:
+    """Mint a single-use link for a client to register their own provider key.
+
+    Four checks, in this order, and the order is the point:
+
+    1. **visibility** — an unentitled caller gets "unknown workflow", identical
+       to a nonexistent one, so link-minting cannot be used to enumerate the
+       catalog by diffing errors (the same contract ``entitlements`` keeps);
+    2. **acting-for** — the run owner is resolved from verified roles.
+       An operator must name a client explicitly; they never imply one;
+    3. **entitlement** — the *resolved owner* must be entitled, not merely some
+       role the caller holds, so a caller entitled via ``a`` cannot register a
+       key that will be spent on runs owned by ``b``;
+    4. **requirement** — the credential must be one this workflow actually
+       declares. Without this, a caller could register a key against any
+       catalogue id under cover of a workflow that never uses it.
+
+    Everything that scopes the resulting capability is baked into the grant and
+    re-read from nothing: subject, service, credential id and action all come
+    from here, never from the page's form.
+    """
+    context = client_context or {}
+    require_visible(workflow, scope)
+    client_slug = require_client(scope, context.get("client_slug"))
+    require_entitled(workflow, client_slug, scope)
+
+    try:
+        grant_action = GrantAction(action)
+    except ValueError:
+        raise ValueError(
+            f"unknown action {action!r} (expected one of "
+            f"{', '.join(sorted(item.value for item in GrantAction))})"
+        ) from None
+
+    contract = load_contract(workflow)
+    requirements = contract.requirements
+    if not requirements.declared:
+        # Fail closed. An undeclared block means nobody has stated what this
+        # workflow spends, so "is this credential one of them?" has no answer —
+        # and minting anyway would let a client register a key against a
+        # workflow that will never use it, which reads as connected forever.
+        raise ValueError(
+            f"workflow {workflow!r} declares no credential requirements yet, so no "
+            "credential can be registered against it"
+        )
+    declared = set(requirements.credentials) | set(requirements.resolved_credentials)
+    if credential_id not in declared:
+        raise ValueError(
+            f"workflow {workflow!r} does not use credential {credential_id!r} "
+            f"(it declares: {', '.join(sorted(declared)) or 'none'})"
+        )
+    # Catalogue membership is checked separately and AFTER the contract, so a
+    # caller can never use the difference between the two errors to enumerate
+    # the catalogue: they must already have named a credential this workflow
+    # declares to reach here.
+    spec = credentials.CATALOGUE.get(credential_id)
+
+    subject = Subject(SubjectKind.CLIENT_SLUG, client_slug)
+    if scope.unrestricted:
+        _audit(
+            AuditEvent(
+                action=AuditAction.OPERATOR_ACTING_FOR,
+                service=credentials.SERVICE,
+                outcome="ok",
+                subject_hash=subject.hashed,
+                subject_kind=subject.kind,
+                credential_id=spec.credential_id,
+                workflow=workflow,
+            )
+        )
+    grant = mint_grant(
+        credentials.GRANTS,
+        subject=subject,
+        service=credentials.SERVICE,
+        credential_id=spec.credential_id,
+        action=grant_action,
+        issuer=credentials.SERVICE,
+        workflow=workflow,
+    )
+    _audit(
+        AuditEvent(
+            action=AuditAction.GRANT_MINTED,
+            service=credentials.SERVICE,
+            outcome="ok",
+            subject_hash=subject.hashed,
+            subject_kind=subject.kind,
+            credential_id=spec.credential_id,
+            workflow=workflow,
+        )
+    )
+    return {
+        "workflow": workflow,
+        "client_slug": client_slug,
+        "credential_id": str(spec.credential_id),
+        "provider": spec.provider,
+        "action": grant_action.value,
+        # The token exists only in this response and in the minting process's
+        # memory. It is not stored, not logged, and cannot be re-derived.
+        "registration_url": f"{_public_base_url()}/keys?token={grant.token}",
+        "expires_in_seconds": DEFAULT_TTL_SECONDS,
+    }
 
 
 def get_input_session(handle: str, scope: CallerScope) -> dict[str, Any]:

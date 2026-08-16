@@ -24,8 +24,9 @@ from typing import TYPE_CHECKING
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from stromy_byok import build_keys_routes
 
-from . import migrations, registry, upload_page
+from . import credentials, migrations, registry, service, upload_page
 from .config import settings
 
 if TYPE_CHECKING:
@@ -81,3 +82,22 @@ def register(mcp: FastMCP) -> None:
     mcp.custom_route("/uploads/{session_id}/finalize", methods=["POST"])(
         upload_page.upload_finalize
     )
+
+    # ORG-PLAN-206 C4 — the BYOK registration page, from the shared library.
+    # Same boundary reasoning as the upload routes above: outside MCP OAuth by
+    # design, because the person pasting the key holds a short-lived single-use
+    # grant rather than an Entra app role. That is the narrower model, not the
+    # weaker one — the grant binds subject, service, credential and action at
+    # mint time, so the page's entire input surface is a token and a key.
+    #
+    # The store is resolved PER REQUEST through the factory, so provisioning the
+    # vault after startup starts working without a redeploy.
+    keys = build_keys_routes(
+        catalogue=credentials.CATALOGUE,
+        grant_store=credentials.GRANTS,
+        store_factory=credentials.credential_store,
+        service=credentials.SERVICE,
+        audit_sink=service._audit,
+    )
+    mcp.custom_route("/keys", methods=["GET"])(keys.get)
+    mcp.custom_route("/keys", methods=["POST"])(keys.post)

@@ -93,6 +93,20 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-keyvault-secrets"
+version = "4.11.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5e/ee/c875370169d708fdfa2302078d8506cc8df40645f46c2b8cc7466d7cb1f6/azure_keyvault_secrets-4.11.1.tar.gz", hash = "sha256:23b11cbecf4525081121e68a82d7f3a4211556f6dbb4ddbb390a94db8b72c938", size = 115813, upload-time = "2026-08-12T16:40:52.468Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/79/32aa77853e694711233a2f36af9ad0a7eaae2cc5e57804055192a3a0eac2/azure_keyvault_secrets-4.11.1-py3-none-any.whl", hash = "sha256:a5745d17d56061130cc56aa53c02c783e5d597031faf551b1873948461e8e700", size = 103733, upload-time = "2026-08-12T16:40:53.777Z" },
+]
+
+[[package]]
 name = "azure-storage-blob"
 version = "12.30.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1370,6 +1384,22 @@ version = "0.6.0"
 source = { git = "https://github.com/stromy-org/asset-transport.git?tag=v0.6.0#806b59c588d70a0c7bbf38c645d6f87924addf0d" }
 
 [[package]]
+name = "stromy-byok"
+version = "0.2.1"
+source = { git = "https://github.com/stromy-org/stromy-byok.git?tag=v0.2.1#bbac088bac251644a3e9ed4a89687f1f45f9d08a" }
+dependencies = [
+    { name = "httpx" },
+    { name = "python-multipart" },
+    { name = "starlette" },
+]
+
+[package.optional-dependencies]
+azure = [
+    { name = "azure-identity" },
+    { name = "azure-keyvault-secrets" },
+]
+
+[[package]]
 name = "stromy-workflows-mcp"
 version = "0.1.0"
 source = { editable = "." }
@@ -1383,6 +1413,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
     { name = "stromy-asset-transport" },
+    { name = "stromy-byok", extra = ["azure"] },
     { name = "workflow-runtime-core" },
 ]
 
@@ -1406,6 +1437,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "stromy-asset-transport", git = "https://github.com/stromy-org/asset-transport.git?tag=v0.6.0" },
+    { name = "stromy-byok", extras = ["azure"], git = "https://github.com/stromy-org/stromy-byok.git?tag=v0.2.1" },
     { name = "workflow-runtime-core", git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.4.0" },
 ]
 
