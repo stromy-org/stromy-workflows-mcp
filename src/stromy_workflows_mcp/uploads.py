@@ -42,6 +42,12 @@ MAX_SESSION_BYTES = int(
 SESSION_TTL_SECONDS = int(os.environ.get("WORKFLOW_UPLOAD_SESSION_TTL_SECONDS", "3600"))
 MAX_FILENAME_CHARS = 200
 
+#: Ceiling for text supplied inline by the calling agent (a briefing drafted and
+#: reviewed in the conversation). Deliberately far below MAX_FILE_BYTES: inline
+#: rides a tool call, not a blob PUT, and must never become a second bulk
+#: channel — anything bigger goes through the browser page.
+MAX_INLINE_BYTES = int(os.environ.get("WORKFLOW_UPLOAD_MAX_INLINE_BYTES", str(128 * 1024)))
+
 #: v1 allowlist. Richer Office formats need malware/CDR controls, which are a
 #: separate security decision — not an implicit extension of this tuple.
 ALLOWED_EXTENSIONS: dict[str, str] = {
@@ -71,11 +77,18 @@ class UploadRejected(ValueError):
 
 @dataclass(frozen=True)
 class DeclaredFile:
-    """One file a client says it intends to upload."""
+    """One file a client intends to upload, or supplies inline.
+
+    Two mutually completing shapes: a *declared* file carries the exact
+    ``size_bytes`` of bytes a browser will later PUT; an *inline* file carries
+    its UTF-8 text in ``content`` and needs no size (it is derived) and no
+    browser step.
+    """
 
     name: str
-    size_bytes: int
+    size_bytes: int = 0
     media_type: str | None = None
+    content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +100,8 @@ class AcceptedFile:
     media_type: str
     size_bytes: int
     ordinal: int
+    #: Present only for inline files — the exact bytes to stage server-side.
+    content_bytes: bytes | None = None
 
 
 # --- Capability tokens -------------------------------------------------------
@@ -172,18 +187,60 @@ def accept_declaration(files: list[DeclaredFile], *, session_id: str) -> list[Ac
     for ordinal, declared in enumerate(files, start=1):
         validate_display_name(declared.name)
         suffix = safe_extension(declared.name)
-        if declared.size_bytes <= 0:
-            raise UploadRejected(
-                f"file {ordinal} is empty; an empty file carries no evidence",
-                code="empty_file",
+        media_type = ALLOWED_EXTENSIONS[suffix]
+        content_bytes: bytes | None = None
+        if declared.content is not None:
+            if media_type == "application/pdf":
+                raise UploadRejected(
+                    f"file {ordinal} supplies inline content but {suffix} is a "
+                    "binary format; inline is for .md/.txt text — binaries go "
+                    "through the browser upload page",
+                    code="inline_not_text",
+                )
+            content_bytes = declared.content.encode("utf-8")
+            if not content_bytes:
+                raise UploadRejected(
+                    f"file {ordinal} inline content is empty; an empty file "
+                    "carries no evidence",
+                    code="empty_file",
+                )
+            if len(content_bytes) > MAX_INLINE_BYTES:
+                raise UploadRejected(
+                    f"file {ordinal} inline content is {len(content_bytes)} bytes, "
+                    f"above the {MAX_INLINE_BYTES}-byte inline limit; declare it "
+                    "with its exact size and use the browser upload page",
+                    code="inline_too_large",
+                )
+            if declared.size_bytes and declared.size_bytes != len(content_bytes):
+                raise UploadRejected(
+                    f"file {ordinal} declares {declared.size_bytes} bytes but its "
+                    f"inline content encodes to {len(content_bytes)}; omit "
+                    "size_bytes for inline files — it is derived",
+                    code="size_mismatch",
+                )
+            # The same content gates the browser path gets at finalization,
+            # applied at the only moment the inline author can still fix them.
+            verify_content(
+                content_bytes, media_type=media_type, declared_size=len(content_bytes)
             )
-        if declared.size_bytes > MAX_FILE_BYTES:
+            size_bytes = len(content_bytes)
+        else:
+            if declared.size_bytes <= 0:
+                raise UploadRejected(
+                    f"file {ordinal} declares no size; give the EXACT byte size "
+                    "of the file that will be uploaded (finalization rejects any "
+                    "mismatch) — or, for small .md/.txt text you already hold, "
+                    "pass it inline as 'content' and omit the size",
+                    code="empty_file",
+                )
+            size_bytes = declared.size_bytes
+        if size_bytes > MAX_FILE_BYTES:
             raise UploadRejected(
-                f"file {ordinal} is {declared.size_bytes} bytes, above the "
+                f"file {ordinal} is {size_bytes} bytes, above the "
                 f"{MAX_FILE_BYTES}-byte per-file limit",
                 code="file_too_large",
             )
-        total += declared.size_bytes
+        total += size_bytes
         if total > MAX_SESSION_BYTES:
             raise UploadRejected(
                 f"session exceeds the {MAX_SESSION_BYTES}-byte total limit",
@@ -196,9 +253,10 @@ def accept_declaration(files: list[DeclaredFile], *, session_id: str) -> list[Ac
                 # The DECLARED media type is deliberately discarded: it is
                 # caller-controlled. The extension is allowlisted and the real
                 # bytes are checked at finalization.
-                media_type=ALLOWED_EXTENSIONS[suffix],
-                size_bytes=declared.size_bytes,
+                media_type=media_type,
+                size_bytes=size_bytes,
                 ordinal=ordinal,
+                content_bytes=content_bytes,
             )
         )
     return accepted
