@@ -192,6 +192,95 @@ def test_empty_upload_is_refused() -> None:
     assert exc.value.code == "empty_file"
 
 
+# --- Inline content ----------------------------------------------------------
+#
+# The agent-side channel: text drafted and reviewed in the conversation enters
+# the session directly, with the SAME content gates the browser path gets at
+# finalization — applied at declaration, the only moment the author can still
+# fix the input.
+
+
+def _inline(name: str = "briefing.md", content: str = "# Briefing\n", **kw) -> DeclaredFile:
+    return DeclaredFile(name=name, content=content, **kw)
+
+
+def test_inline_text_is_accepted_and_its_size_is_derived() -> None:
+    accepted = uploads.accept_declaration([_inline()], session_id=SESSION)
+    assert accepted[0].content_bytes == b"# Briefing\n"
+    assert accepted[0].size_bytes == len(b"# Briefing\n")
+    assert accepted[0].media_type == "text/markdown"
+
+
+def test_inline_size_is_derived_from_bytes_not_characters() -> None:
+    """A é is one character and two UTF-8 bytes; the byte count must win."""
+    accepted = uploads.accept_declaration([_inline(content="café\n")], session_id=SESSION)
+    assert accepted[0].size_bytes == len("café\n".encode())
+
+
+def test_inline_pdf_is_refused() -> None:
+    """Binary formats stay on the browser path; inline is text-only."""
+    with pytest.raises(UploadRejected) as exc:
+        uploads.accept_declaration([_inline(name="report.pdf")], session_id=SESSION)
+    assert exc.value.code == "inline_not_text"
+
+
+def test_inline_above_the_inline_ceiling_is_refused() -> None:
+    big = "x" * (uploads.MAX_INLINE_BYTES + 1)
+    with pytest.raises(UploadRejected) as exc:
+        uploads.accept_declaration([_inline(content=big)], session_id=SESSION)
+    assert exc.value.code == "inline_too_large"
+
+
+def test_inline_with_a_contradicting_declared_size_is_refused() -> None:
+    """One source of truth: the bytes. A stale declared size must not ride along."""
+    with pytest.raises(UploadRejected) as exc:
+        uploads.accept_declaration(
+            [_inline(content="# Hello\n", size_bytes=9999)], session_id=SESSION
+        )
+    assert exc.value.code == "size_mismatch"
+
+
+def test_inline_with_a_matching_declared_size_is_accepted() -> None:
+    content = "# Hello\n"
+    accepted = uploads.accept_declaration(
+        [_inline(content=content, size_bytes=len(content.encode()))], session_id=SESSION
+    )
+    assert accepted[0].size_bytes == len(content.encode())
+
+
+def test_empty_inline_content_is_refused() -> None:
+    with pytest.raises(UploadRejected) as exc:
+        uploads.accept_declaration([_inline(content="")], session_id=SESSION)
+    assert exc.value.code == "empty_file"
+
+
+def test_inline_content_with_nul_bytes_is_refused() -> None:
+    """The finalization content gate runs at declaration for inline files."""
+    with pytest.raises(UploadRejected) as exc:
+        uploads.accept_declaration([_inline(content="a\x00b")], session_id=SESSION)
+    assert exc.value.code == "type_mismatch"
+
+
+def test_a_declared_file_still_requires_an_exact_size() -> None:
+    """The browser path's contract is unchanged — and the refusal now teaches it."""
+    with pytest.raises(UploadRejected) as exc:
+        uploads.accept_declaration([_declare("brief.pdf", size=0)], session_id=SESSION)
+    assert exc.value.code == "empty_file"
+    assert "EXACT" in str(exc.value)
+
+
+def test_inline_files_count_toward_the_session_total() -> None:
+    """The session ceiling is one budget, whichever channel fills it."""
+    chunk = "x" * uploads.MAX_INLINE_BYTES
+    # Enough max-size declared files to land exactly on the session ceiling, so
+    # the inline bytes are what tip it over.
+    fills = uploads.MAX_SESSION_BYTES // uploads.MAX_FILE_BYTES
+    declared = [_declare(f"big{i}.pdf", size=uploads.MAX_FILE_BYTES) for i in range(fills)]
+    with pytest.raises(UploadRejected) as exc:
+        uploads.accept_declaration([_inline(content=chunk), *declared], session_id=SESSION)
+    assert exc.value.code == "session_too_large"
+
+
 # --- Redaction ---------------------------------------------------------------
 
 

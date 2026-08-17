@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from . import input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
-from .blobs import AzureStagedReader, output_container, storage_account
+from .blobs import AzureStagedReader, AzureStagedWriter, output_container, storage_account
 from .config import settings
 from .contracts import CallerRole, Contract, load_contract
 from .dispatch import (
@@ -21,7 +21,7 @@ from .dispatch import (
 )
 from .entitlements import require_entitled, require_visible, visible_workflows
 from .scoping import CallerScope, require_client
-from .uploads import SESSION_TTL_SECONDS, DeclaredFile
+from .uploads import SESSION_TTL_SECONDS, DeclaredFile, UploadRejected
 
 
 class JobClient(Protocol):
@@ -458,40 +458,60 @@ def _public_base_url() -> str:
     return (explicit or settings.oauth_base_url).rstrip("/")
 
 
+def _declared_file(item: dict[str, Any]) -> DeclaredFile:
+    content = item.get("content")
+    if content is not None and not isinstance(content, str):
+        raise UploadRejected(
+            "file 'content' must be a UTF-8 string when present", code="inline_not_text"
+        )
+    return DeclaredFile(
+        name=str(item.get("name", "")),
+        size_bytes=int(item.get("size_bytes") or 0),
+        media_type=item.get("media_type"),
+        content=content,
+    )
+
+
 def create_input_session(
     files: list[dict[str, Any]],
     client_context: dict[str, Any] | None,
     scope: CallerScope,
+    *,
+    stage_bytes: Any = None,
 ) -> dict[str, Any]:
-    """Open an upload session and return a one-time browser upload link.
+    """Open an input session; supply files by browser upload, inline text, or both.
 
-    The link — not a set of SAS URLs — is what comes back to the caller. An
-    agent has no filesystem the client's documents live on; a human does. So the
-    capability travels to a browser the person controls, and the bytes go
-    straight from that browser to storage without transiting this facade.
+    A *declared* file returns inside a one-time browser upload link — not a set
+    of SAS URLs — because those documents live on a person's filesystem, not the
+    agent's. The capability travels to a browser the person controls, and the
+    bytes go straight from that browser to storage without transiting this
+    facade.
+
+    An *inline* file carries its text in the call itself, for the opposite case:
+    content the agent already holds because it was drafted and reviewed in the
+    conversation. Those bytes are staged server-side immediately, and if every
+    file is inline no upload link is returned at all — nothing is left for a
+    browser to do, and an unused write capability should not exist.
     """
     context = client_context or {}
     client_slug = require_client(scope, context.get("client_slug"))
-    declared = [
-        DeclaredFile(
-            name=str(item.get("name", "")),
-            size_bytes=int(item.get("size_bytes") or 0),
-            media_type=item.get("media_type"),
-        )
-        for item in files
-    ]
+    declared = [_declared_file(item) for item in files]
+    writer = stage_bytes
+    if writer is None and any(item.content is not None for item in declared):
+        writer = AzureStagedWriter()
     with registry.connect() as conn:
         registry.require_data_plane(registry.schema_version(conn), "input sessions")
-        session, token, _accepted = input_sessions.create_session(
-            conn, client_slug=client_slug, files=declared
+        session, token, accepted = input_sessions.create_session(
+            conn, client_slug=client_slug, files=declared, stage_bytes=writer
         )
     payload = session.public()
-    # The raw token exists only in this response. It is not stored, not logged,
-    # and cannot be re-derived from the row.
-    payload["upload_url"] = (
-        f"{_public_base_url()}/uploads/{session.session_id}?t={token}"
-    )
-    payload["expires_in_seconds"] = SESSION_TTL_SECONDS
+    if any(item.content_bytes is None for item in accepted):
+        # The raw token exists only in this response. It is not stored, not
+        # logged, and cannot be re-derived from the row.
+        payload["upload_url"] = (
+            f"{_public_base_url()}/uploads/{session.session_id}?t={token}"
+        )
+        payload["expires_in_seconds"] = SESSION_TTL_SECONDS
     return payload
 
 

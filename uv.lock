@@ -1371,7 +1371,7 @@ source = { git = "https://github.com/stromy-org/asset-transport.git?tag=v0.6.0#8
 
 [[package]]
 name = "stromy-workflows-mcp"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "azure-identity" },
