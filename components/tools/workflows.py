@@ -93,15 +93,28 @@ async def create_input_session(
     files: list[dict[str, Any]],
     client_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Open an upload session for a workflow that requires client documents.
+    """Open an input session for client documents — browser upload, inline text, or both.
 
-    Declare each file as ``{"name": "brief.pdf", "size_bytes": 12345}``. Returns
-    an ``inputset:`` handle plus a one-time ``upload_url`` for a browser: give
-    that link to the person who has the documents, since the bytes travel from
-    their browser straight to storage and never through this server or the
-    agent. Accepted types are .md, .txt and .pdf.
+    Each file takes one of two shapes:
 
-    Pass the handle as the workflow's input field once the session is finalized.
+    * **Inline** ``{"name": "briefing.md", "content": "<the full text>"}`` — for
+      .md/.txt content you already hold, e.g. a briefing drafted and reviewed in
+      this conversation. Omit ``size_bytes`` (it is derived). Staged
+      immediately; no browser step for these files. Capped at ~128 KB per file.
+    * **Declared** ``{"name": "brief.pdf", "size_bytes": 12345}`` — for files
+      only the person has (PDFs, anything large). ``size_bytes`` MUST be the
+      exact byte size of the file that will be uploaded — finalization rejects
+      any mismatch — so if you cannot measure the file, ask the person to
+      attach it to the conversation first, or supply text inline instead.
+
+    Returns an ``inputset:`` handle; when any file is declared, also a one-time
+    ``upload_url`` for a browser — give that link to the person who has the
+    documents, since those bytes travel from their browser straight to storage
+    and never through this server or the agent. Accepted types: .md, .txt, .pdf.
+
+    Call ``finalize_input_session`` once every declared file is uploaded (or
+    immediately when everything was inline), then pass the handle as the
+    workflow's input field.
     """
     try:
         return await asyncio.to_thread(
@@ -189,11 +202,11 @@ async def get_input_session(handle: str) -> dict[str, Any]:
 
 @tool
 async def finalize_input_session(handle: str) -> dict[str, Any]:
-    """Verify the uploaded bytes and close an input session.
+    """Verify the staged bytes and close an input session.
 
-    Checks each file's real content against what the session declared, then
-    revokes the upload link. Only a finalized handle can be attached to a run.
-    Safe to call more than once.
+    Checks each file's real content against what the session declared — browser
+    uploads and inline files alike — then revokes the upload link. Only a
+    finalized handle can be attached to a run. Safe to call more than once.
     """
     try:
         return await asyncio.to_thread(

@@ -104,17 +104,31 @@ def create_session(
     client_slug: str,
     files: list[DeclaredFile],
     ttl_seconds: int = SESSION_TTL_SECONDS,
+    stage_bytes: Any = None,
 ) -> tuple[InputSession, str, list[AcceptedFile]]:
     """Create a session. Returns (session, RAW capability token, accepted files).
 
     The raw token is returned exactly once, to be embedded in the page URL. Only
     its hash is stored, so a registry dump is not a working set of upload
     capabilities.
+
+    Files supplied inline are staged server-side here via
+    ``stage_bytes(storage_key, data, media_type)`` and recorded as ``uploaded``;
+    declared-only files stay ``declared`` and await the browser page. Both kinds
+    pass through the same ``finalize`` verification before the handle is usable.
     """
     session_id = str(uuid.uuid4())
     accepted = accept_declaration(files, session_id=session_id)
+    inline = [item for item in accepted if item.content_bytes is not None]
+    if inline and stage_bytes is None:
+        raise InputSessionError("inline content was supplied but no staging writer is configured")
     token = new_capability_token()
     expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
+
+    # Stage BEFORE any row exists: if a blob write fails, no session was
+    # created, so there is never a half-staged session to reason about.
+    for item in inline:
+        stage_bytes(item.storage_name, item.content_bytes, item.media_type)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -131,7 +145,7 @@ def create_session(
                 INSERT INTO input_files
                     (file_id, session_id, display_name, staging_blob_key,
                      media_type, size_bytes, ordinal, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'declared')
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -141,6 +155,7 @@ def create_session(
                     item.media_type,
                     item.size_bytes,
                     item.ordinal,
+                    "uploaded" if item.content_bytes is not None else "declared",
                 ),
             )
     return _load(conn, session_id), token, accepted

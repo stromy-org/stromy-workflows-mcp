@@ -1,6 +1,6 @@
 [project]
 name = "stromy-workflows-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hosted workflow discovery, validation, execution, and lifecycle facade for Stromy"
 readme = "README.md"
 requires-python = ">=3.13"

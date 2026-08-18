@@ -51,17 +51,41 @@ user to connect — and if a key is needed, mint a browser link with
 
 ## Where the evidence comes from
 
-The run sources its own evidence. A research-orchestration stage gathers source
-material as part of the flow and hands it to document loading, so there is no evidence
-folder to choose and none to ask for. Two things follow:
+The run sources its own evidence: a research-orchestration stage gathers source
+material as part of the flow and hands it to document loading. Client documents are
+**optional, additive input** — when supplied through an input session, the runner
+rehydrates them into that same document-loading stage alongside whatever sourcing
+gathers. Two things follow:
 
 - **Never ask the user for a path, folder, or uploaded location**, and never accept one
   they volunteer. Paths on their machine are unreachable from the hosted service, and
-  paths inside the service are not theirs to name.
-- If the user wants specific documents considered, say plainly that supplying your own
-  documents is not yet supported on the hosted service, and that the run will gather
-  public evidence about the decision instead. Do not improvise an upload, a URL list, or
-  a local build. Let them decide whether to continue on that basis.
+  paths inside the service are not theirs to name. Documents travel only through an
+  input session (below).
+- **Offer — never require — client documents.** If the user wants specific documents
+  considered, run the input-session flow; otherwise the run proceeds on gathered
+  public evidence alone.
+
+### Supplying client documents (input session)
+
+Create one session per run with `create_input_session`, choosing the right channel per
+file:
+
+- **Text authored or reviewed in this conversation** (a briefing, meeting notes): pass
+  it inline as `{"name": "briefing.md", "content": "<the full text>"}` — after the user
+  has signed off on the wording, since what you attach is what the run reads. Omit
+  `size_bytes`; the server stages the text immediately and there is no browser step.
+  .md/.txt only, up to ~128 KB per file.
+- **Files only the user holds** (PDFs, longer documents): declare
+  `{"name": "brief.pdf", "size_bytes": <exact bytes>}`. The size MUST be exact —
+  finalization rejects any mismatch — so if you cannot measure the file, ask the user
+  to attach it to the conversation first. Declared bytes always travel through the
+  returned `upload_url` browser page: browser → storage, never through the agent.
+
+Call `finalize_input_session(handle)` — immediately when every file was inline, or
+after the user confirms their uploads landed (`get_input_session` shows per-file
+progress). Submit the returned `inputset:<uuid>` handle as the workflow's `input_set`
+config field. Never invent a handle, and never reuse another run's — a session attaches
+to exactly one run.
 
 ## Interview and configuration
 
@@ -72,8 +96,8 @@ folder to choose and none to ask for. Two things follow:
    request. Group compatible questions into one short structured interview. Today that
    is one question: the decision or proposed change being assessed, which must be
    explicit. **Never ask the user for a file path or evidence folder** — the service
-   gathers its own evidence (see "Where the evidence comes from"), and a path the user
-   could name is one the service cannot read.
+   gathers its own evidence, and documents the user wants considered travel through an
+   input session (see "Where the evidence comes from"), never a path.
 3. Offer tier-2 settings only when they materially affect the result (report title and
    output formats). Never ask about, expose, or submit tier-3 provider controls such as
    model tiers, chunking, retries, internal stages, or budget caps. The client's brand
@@ -106,6 +130,7 @@ folder to choose and none to ask for. Two things follow:
    ## Stakeholder-analysis run
    - Client: … (server-confirmed run owner)
    - Decision or change: …
+   - Client documents: … (finalized `inputset:` handle + file names, or "none")
    - Report title: …
    - Deliverables: …
    - Other defaults accepted: …

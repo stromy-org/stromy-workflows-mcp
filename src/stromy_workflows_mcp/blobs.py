@@ -133,6 +133,47 @@ class AzureUploadUrlMinter:
         return url, expiry
 
 
+class AzureStagedWriter:
+    """Writes agent-supplied inline text into the staging prefix.
+
+    The browser path deliberately keeps bytes out of the facade; this is its
+    counterpart for content the AGENT already holds — a briefing drafted and
+    reviewed in the conversation, where a download-and-reupload round trip
+    through the person's machine adds friction and a byte-mismatch hazard
+    without adding any control. Bounded by ``uploads.MAX_INLINE_BYTES`` and
+    text-only, so it can never become a second bulk channel.
+    """
+
+    def __init__(self, *, account: str | None = None, container: str | None = None) -> None:
+        self._account = account or storage_account()
+        self._container_name = container or input_container()
+        try:
+            from azure.identity import DefaultAzureCredential  # noqa: PLC0415
+            from azure.storage.blob import ContainerClient  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover - packaging guard
+            raise BlobError(
+                "azure-storage-blob/azure-identity are required to stage inline content"
+            ) from exc
+        self._container = ContainerClient(
+            account_url=f"https://{self._account}.blob.core.windows.net",
+            container_name=self._container_name,
+            credential=DefaultAzureCredential(),
+        )
+
+    def __call__(self, storage_key: str, data: bytes, media_type: str) -> None:
+        from azure.storage.blob import ContentSettings  # noqa: PLC0415
+
+        # overwrite=True is safe here: the key embeds a session id generated in
+        # the same call, so the only thing a rewrite can replace is an earlier
+        # attempt at the same file in the same create.
+        self._container.upload_blob(
+            name=storage_key,
+            data=data,
+            overwrite=True,
+            content_settings=ContentSettings(content_type=media_type),
+        )
+
+
 class AzureStagedReader:
     """Reads staged bytes back for content verification at finalization."""
 
