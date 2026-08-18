@@ -43,6 +43,12 @@ configuration. If its tools are unavailable, tell the user to connect that works
 connector and stop. Do not fall back to a local checkout, shell command, or another
 client's connection.
 
+If a run fails for missing credentials, or the user asks whose account pays for it, see
+**Provider keys: whose account pays** in `wf-guide`. In short: check
+`get_credential_status` first — on `credential_policy: operator` there is nothing for the
+user to connect — and if a key is needed, mint a browser link with
+`create_credential_registration_link`. Never accept an API key in the conversation.
+
 ## Where the evidence comes from
 
 The run sources its own evidence: a research-orchestration stage gathers source

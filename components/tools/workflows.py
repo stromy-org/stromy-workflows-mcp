@@ -125,6 +125,68 @@ async def create_input_session(
 
 
 @tool
+async def create_credential_registration_link(
+    workflow: str,
+    credential_id: str,
+    client_context: dict[str, Any] | None = None,
+    action: str = "register_or_rotate",
+) -> dict[str, Any]:
+    """Mint a single-use link for a client to register their own provider key.
+
+    Returns a ``registration_url`` to hand to the person who holds the key —
+    they paste it into a browser page, and the key travels from their browser
+    to the vault without passing through this conversation. **Never ask for a
+    key in chat and never accept one as a tool argument**: this link is the
+    only supported path, precisely so the value cannot land in a transcript.
+
+    The link is single-use and short-lived. A reload does not burn it; only a
+    successful save does. Reissue freely — that is cheaper than a long TTL.
+
+    ``credential_id`` must be one the workflow declares (see
+    ``describe_workflow``'s ``credential_requirements``). Use
+    ``action="disconnect"`` to mint a link that disables the registered key
+    instead; rotation needs no special action, since re-registering replaces it.
+    """
+    try:
+        return await asyncio.to_thread(
+            service.create_credential_registration_link,
+            workflow,
+            credential_id,
+            client_context,
+            identity.caller_scope(),
+            action,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
+async def get_credential_status(
+    workflow: str,
+    client_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Report which of a workflow's credentials this client has registered.
+
+    Returns per-credential status only — never a key, and never any part of one.
+
+    Read ``credential_policy`` first. On ``operator`` the client's runs spend
+    Stromy's keys and there is nothing for them to register; only on ``client``
+    does an unregistered credential mean an outstanding action.
+
+    ``status`` is ``registered``, ``not_registered``, or ``unavailable``.
+    **``unavailable`` is not ``not_registered``** — it means the server cannot
+    read registration state at all, so never tell someone they have no key
+    connected on the strength of it.
+    """
+    try:
+        return await asyncio.to_thread(
+            service.credential_status, workflow, client_context, identity.caller_scope()
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@tool
 async def get_input_session(handle: str) -> dict[str, Any]:
     """Report upload progress for one ``inputset:`` handle the caller owns.
 

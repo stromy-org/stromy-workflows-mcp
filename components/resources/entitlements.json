@@ -1,14 +1,22 @@
 {
-  "version": 1,
-  "_notes": "Authored here, unlike contracts/ which are generated from Stromy. Join table: workflow -> entitled client slugs -> the client-facing wf-* skill. Default-deny: a workflow absent from this file, or present with an empty clients list, is operator-only. Every slug must match an Entra app role in terraform/entra.tf (local.workflow_app_roles) -- adding a slug here does not grant the role. scripts/check_entitlements.py fails CI when a contract has no entry here.",
+  "version": 2,
+  "_notes": "Authored here, unlike contracts/ which are generated from Stromy. Join table: workflow -> entitled client slugs -> the client-facing wf-* skill. Default-deny: a workflow absent from this file, or present with an empty clients object, is operator-only. Every slug must match an Entra app role in terraform/entra.tf (local.workflow_app_roles) -- adding a slug here does not grant the role. scripts/check_entitlements.py fails CI when a contract has no entry here.",
+  "_v2_notes": "v2 (ORG-PLAN-206 C4) turns 'clients' from a LIST of slugs into an OBJECT keyed by slug, so each grant can carry commercial facts alongside the grant itself. Today that is credential_policy: 'operator' (Stromy's provider keys, Stromy carries the spend) or 'client' (the run resolves the client's own registered credentials, ambient operator keys scrubbed first). Every entry migrates to 'operator', so v2 changes no client's billing on its own -- flipping one to 'client' is a deliberate, per-pair commercial act. The parser still accepts the v1 list form and reads it as every slug on the default policy: registry and code deploy independently, and a v1 file meeting a v2-only parser would fail closed and deny every client at once.",
   "workflows": {
     "stakeholder_analysis_workflow": {
-      "clients": ["dukestrategies", "stromy"],
+      "clients": {
+        "dukestrategies": {
+          "credential_policy": "operator"
+        },
+        "stromy": {
+          "credential_policy": "operator"
+        }
+      },
       "skill": "wf-stakeholder-analysis",
       "note": "Duke Strategies pilot (ORG-PLAN-070). Stromy is the self-client full-fleet test surface -- the wf-* skills ship in stromy-plugin, so the slug must be entitled here (validate-plugin-completeness Invariant #19) and hold the client.stromy app role."
     },
     "weekly_intel_workflow": {
-      "clients": [],
+      "clients": {},
       "skill": null,
       "note": "Stromy's own weekly intelligence cron. Operator-only; not a client product."
     }
