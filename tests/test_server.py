@@ -466,10 +466,35 @@ def test_client_validate_config_withholds_provider_locked_keys() -> None:
 
 
 def test_operator_validate_config_still_shows_provider_locked_keys() -> None:
-    """The operator owns the estate; withholding pins from them is not the goal."""
+    """The operator owns the estate; withholding pins from them is not the goal.
+
+    Null pins are the one exception: they are internal derive-from-owner
+    markers, not values, and echoing them breaks the submit-verbatim promise.
+    """
     seen = service.validate_config("stakeholder_analysis_workflow", _MINIMAL, _OPERATOR)["config"]
-    assert _tier3_names() <= set(seen)
+    null_pinned = {
+        name
+        for name, key in load_contract("stakeholder_analysis_workflow").keys.items()
+        if key.tier == 3 and key.pinned is None
+    }
+    assert "brand_slug" in null_pinned  # the case that motivated the carve-out
+    assert _tier3_names() - null_pinned <= set(seen)
+    assert not (null_pinned & set(seen))
     assert seen["deliverable_author_max_tokens"] == 16000
+
+
+def test_validate_config_output_is_resubmittable_verbatim() -> None:
+    """Regression (2026-08-17): the echo carried ``brand_slug: null`` and
+    ``start_run`` rejected exactly what ``validate_config`` said to submit."""
+    echoed = service.validate_config(
+        "stakeholder_analysis_workflow", _MINIMAL, _OPERATOR
+    )["config"]
+
+    _, normalized = service._validated("stakeholder_analysis_workflow", echoed, _OPERATOR)
+
+    # The persisted shape keeps the null marker the runner derives the brand
+    # from; only the caller-facing echo drops it.
+    assert normalized["brand_slug"] is None
 
 
 def test_projection_never_reaches_what_the_runner_receives() -> None:

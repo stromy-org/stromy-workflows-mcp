@@ -303,15 +303,23 @@ class Contract:
         would hand over every budget, model tier, and internal stage toggle the tier
         exists to keep private. Apply this to caller-facing returns ONLY, never to
         what is stored or sent to the runner.
+
+        Null-valued keys are dropped from the echo for EVERY role. A null pin
+        (``brand_slug``) is an internal derive-from-owner marker the runner
+        depends on, while the caller-facing schema types the key as string — so
+        echoing it hands back a config that fails the very validation it just
+        passed, breaking ``validate_config``'s submit-verbatim promise
+        (measured 2026-08-17: ``start_run`` rejected its sibling's own output
+        with "None is not of type 'string'"). Omission round-trips cleanly and
+        means the same thing to the runner path: derive it server-side.
         """
-        if role is CallerRole.OPERATOR:
-            return effective
         locked = {name for name, key in self.keys.items() if key.tier == 3}
         return _unflatten(
             {
                 name: value
                 for name, value in _flatten(effective).items()
-                if name not in locked
+                if value is not None
+                and (role is CallerRole.OPERATOR or name not in locked)
             }
         )
 
