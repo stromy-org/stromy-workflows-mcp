@@ -108,9 +108,21 @@ async def create_input_session(
       attach it to the conversation first, or supply text inline instead.
 
     Returns an ``inputset:`` handle; when any file is declared, also a one-time
-    ``upload_url`` for a browser — give that link to the person who has the
-    documents, since those bytes travel from their browser straight to storage
-    and never through this server or the agent. Accepted types: .md, .txt, .pdf.
+    ``upload_url``. Declared bytes travel straight to storage — never through
+    this server or the model context. Two ways to move them:
+
+    * **Agent-driven, when the bytes are already in your sandbox** (the person
+      attached the file or granted folder access): ``POST
+      <upload_url's path>/urls`` with body ``{"token": "<the t= value>"}`` to
+      mint one short-lived write URL per declared file, then stream each file
+      with ``curl -X PUT -H "x-ms-blob-type: BlockBlob" -H "content-type:
+      <media_type>" --data-binary @<file> "<url>"``. Never re-encode or inline
+      the bytes into a tool call. If the sandbox has no egress to those hosts,
+      fall back to the browser flow.
+    * **Browser, when only the person has the file**: give them the
+      ``upload_url`` — their browser uploads directly to storage.
+
+    Accepted types: .md, .txt, .pdf.
 
     Call ``finalize_input_session`` once every declared file is uploaded (or
     immediately when everything was inline), then pass the handle as the
@@ -218,7 +230,14 @@ async def finalize_input_session(handle: str) -> dict[str, Any]:
 
 @tool
 async def run_status(run_id: str) -> dict[str, Any]:
-    """Return one caller-scoped run, including an HITL interrupt payload."""
+    """Return one caller-scoped run, including an HITL interrupt payload.
+
+    Also carries ``config``: the run's configuration filtered to what this
+    caller may see (provider-locked keys stay hidden from clients). It
+    resubmits cleanly, so "run it again like last time" is: take this run's
+    ``config``, change what the user wants changed (a fresh ``input_set`` at
+    minimum — a session attaches to exactly one run), confirm, ``start_run``.
+    """
     try:
         return await asyncio.to_thread(service.run_status, run_id, identity.caller_scope())
     except Exception as exc:

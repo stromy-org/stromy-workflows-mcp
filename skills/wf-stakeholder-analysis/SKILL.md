@@ -67,27 +67,53 @@ gathers. Two things follow:
 
 ### Supplying client documents (input session)
 
+**Real files beat re-typed text.** When the user mentions a document, ask them to
+attach it to the conversation (or grant folder access) rather than pasting its
+contents — chat-pasted text arrives reformatted or clipped, and a reconstruction is
+not the document. Reserve inline content for text genuinely authored in this
+conversation. What you attach is what the run reads.
+
 Create one session per run with `create_input_session`, choosing the right channel per
 file:
 
-- **Text authored or reviewed in this conversation** (a briefing, meeting notes): pass
-  it inline as `{"name": "briefing.md", "content": "<the full text>"}` — after the user
-  has signed off on the wording, since what you attach is what the run reads. Omit
+- **Text authored in this conversation** (a briefing drafted and signed off here): pass
+  it inline as `{"name": "briefing.md", "content": "<the full text>"}`. Omit
   `size_bytes`; the server stages the text immediately and there is no browser step.
-  .md/.txt only, up to ~128 KB per file.
-- **Files only the user holds** (PDFs, longer documents): declare
-  `{"name": "brief.pdf", "size_bytes": <exact bytes>}`. The size MUST be exact —
-  finalization rejects any mismatch — so if you cannot measure the file, ask the user
-  to attach it to the conversation first. Declared bytes always travel through the
-  returned `upload_url` browser page: browser → storage, never through the agent.
+  .md/.txt only, up to ~128 KB per file. A document the user *pasted* is not this
+  case — ask for the file instead.
+- **Files whose bytes you hold in the sandbox** (attached to the conversation, or read
+  via granted folder access): declare `{"name": "brief.pdf", "size_bytes": <exact
+  bytes>}` measured from the real file, then **drive the upload yourself** — no
+  browser step for the user. From the returned `upload_url` (shape
+  `<base>/uploads/<session_id>?t=<token>`): `POST <base>/uploads/<session_id>/urls`
+  with body `{"token": "<token>"}` to mint one short-lived write URL per declared
+  file, then stream each file with
+  `curl -X PUT -H "x-ms-blob-type: BlockBlob" -H "content-type: <media_type>"
+  --data-binary @<file> "<url>"`. Bytes go sandbox → storage directly; never inline
+  or re-encode them into a tool call. If the sandbox cannot reach those hosts,
+  fall back to the browser flow below and say so.
+- **Files only the user holds**: declare them with the exact `size_bytes`
+  (finalization rejects any mismatch — if you cannot measure the file, ask the user
+  to attach it first, which also upgrades it to the channel above). Give the user
+  the `upload_url`; their browser uploads directly to storage, never through the
+  agent.
 
-Call `finalize_input_session(handle)` — immediately when every file was inline, or
-after the user confirms their uploads landed (`get_input_session` shows per-file
-progress). Submit the returned `inputset:<uuid>` handle as the workflow's `input_set`
+Call `finalize_input_session(handle)` — immediately when every file was inline or
+agent-uploaded, or after the user confirms their browser uploads landed
+(`get_input_session` shows per-file progress). Submit the returned `inputset:<uuid>`
+handle as the workflow's `input_set`
 config field. Never invent a handle, and never reuse another run's — a session attaches
 to exactly one run.
 
 ## Interview and configuration
+
+**Repeat runs skip the interview.** When the user asks to run it "again", "like last
+time", or against a prior run's setup: find that run (`list_runs`, or the `run_id`
+they name), call `run_status` on it, and seed from its `config` — it is already
+filtered to what this caller may see and resubmits cleanly. Change only what the user
+wants changed; a fresh `input_set` is always needed when documents are attached (a
+session binds to exactly one run). The pre-flight confirmation block below still runs
+in full — recall replaces the interview, never the approval.
 
 1. Call `describe_workflow(name="stakeholder_analysis_workflow")`. Treat the returned
    contract as authoritative; do not rely on remembered fields. `list_workflows`
