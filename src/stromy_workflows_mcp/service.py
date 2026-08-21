@@ -23,7 +23,7 @@ from . import credentials, input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
 from .blobs import AzureStagedReader, AzureStagedWriter, output_container, storage_account
 from .config import settings
-from .contracts import CallerRole, Contract, load_contract
+from .contracts import CallerRole, Contract, ContractError, load_contract
 from .dispatch import (
     Dispatcher,
     DispatchError,
@@ -398,10 +398,35 @@ async def retry_run(
     return attempt.public()
 
 
+def _reusable_config(run: registry.Run, role: CallerRole) -> dict[str, Any] | None:
+    """The run's stored config, filtered to what this caller may SEE.
+
+    ``config_json`` is the FULL effective config — tier-3 pins included, plus
+    internal markers like ``_resume`` written by ``request_resume`` — so it can
+    never be returned raw. ``Contract.reusable`` drops undeclared keys first and
+    then applies the same role filter ``validate_config`` uses for its echo, so
+    the result is resubmittable as-is — the "same as last time" seed for a
+    repeat run.
+
+    ``None`` (key omitted from the response) when the workflow's contract no
+    longer loads: a run outlives contract renames, and status must keep working
+    for it.
+    """
+    try:
+        contract = load_contract(run.workflow)
+    except ContractError:
+        return None
+    return contract.reusable(run.config_json, role)
+
+
 def run_status(run_id: str, scope: CallerScope) -> dict[str, Any]:
     with registry.connect() as conn:
         run = _require_run_scope(registry.get_run(conn, run_id), scope)
-    return run.public()
+    payload = run.public()
+    config = _reusable_config(run, _role(scope))
+    if config is not None:
+        payload["config"] = config
+    return payload
 
 
 def list_runs(scope: CallerScope, limit: int = 50) -> list[dict[str, Any]]:

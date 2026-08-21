@@ -144,6 +144,81 @@ def test_public_never_leaks_lease_or_dispatch_internals() -> None:
     assert "dispatch_id" not in payload
 
 
+# --- Reusable config (repeat-run seed) ---------------------------------------
+
+
+def test_reusable_config_strips_internals_and_locked_keys() -> None:
+    """The 2026-08-20 round-trip finding: ``config_json`` must never return raw.
+
+    It carries ``_resume`` (an internal marker ``project`` would pass through)
+    and tier-3 pins (locked from clients in BOTH directions). ``reusable`` is
+    the only sanctioned projection of a stored config.
+    """
+    from stromy_workflows_mcp.contracts import CallerRole
+
+    contract = load_contract("stakeholder_analysis_workflow")
+    stored = {
+        "decision_summary": "hosted-plane rollout",
+        "input_set": "inputset:44444444-4444-4444-4444-444444444444",
+        "deliverable_author_max_tokens": 16000,
+        "_resume": {"questionnaire": []},
+    }
+    seen_by_client = contract.reusable(stored, CallerRole.CLIENT)
+    assert seen_by_client["decision_summary"] == "hosted-plane rollout"
+    assert seen_by_client["input_set"] == stored["input_set"]
+    assert "_resume" not in seen_by_client
+    assert "deliverable_author_max_tokens" not in seen_by_client
+
+    seen_by_operator = contract.reusable(stored, CallerRole.OPERATOR)
+    assert seen_by_operator["deliverable_author_max_tokens"] == 16000
+    assert "_resume" not in seen_by_operator
+
+
+def test_run_status_carries_the_role_projected_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import nullcontext
+
+    from stromy_workflows_mcp import service
+    from stromy_workflows_mcp.scoping import CallerScope
+
+    run = registry.Run.from_row(
+        _v2_row(
+            config_json={
+                "decision_summary": "hosted-plane rollout",
+                "deliverable_author_max_tokens": 16000,
+                "_resume": {"questionnaire": []},
+            }
+        )
+    )
+    monkeypatch.setattr(registry, "connect", lambda: nullcontext(object()))
+    monkeypatch.setattr(registry, "get_run", lambda _conn, _run_id: run)
+
+    client_view = service.run_status(run.run_id, CallerScope(frozenset({"dukestrategies"})))
+    assert client_view["config"] == {"decision_summary": "hosted-plane rollout"}
+
+    operator_view = service.run_status(run.run_id, CallerScope(frozenset(), unrestricted=True))
+    assert operator_view["config"]["deliverable_author_max_tokens"] == 16000
+    assert "_resume" not in operator_view["config"]
+
+
+def test_run_status_omits_config_when_the_contract_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run outlives contract renames; status must keep working for it."""
+    from contextlib import nullcontext
+
+    from stromy_workflows_mcp import service
+    from stromy_workflows_mcp.scoping import CallerScope
+
+    run = registry.Run.from_row(_v2_row(workflow="retired_workflow"))
+    monkeypatch.setattr(registry, "connect", lambda: nullcontext(object()))
+    monkeypatch.setattr(registry, "get_run", lambda _conn, _run_id: run)
+
+    payload = service.run_status(run.run_id, CallerScope(frozenset(), unrestricted=True))
+    assert "config" not in payload
+
+
 # --- Adapter declarations ----------------------------------------------------
 
 

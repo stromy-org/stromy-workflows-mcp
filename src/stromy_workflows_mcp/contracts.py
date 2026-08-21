@@ -323,6 +323,24 @@ class Contract:
             }
         )
 
+    def reusable(self, stored: dict[str, Any], role: CallerRole) -> dict[str, Any]:
+        """Project a STORED config (``config_json``) for caller eyes.
+
+        ``project`` assumes its input is the output of ``validate`` — every key
+        contract-declared. A stored config is dirtier: ``request_resume`` writes
+        ``_resume`` into it, and future internals may follow. Drop everything
+        outside the declared properties FIRST (``project`` only filters *locked*
+        keys, so an unknown key would reach the caller — for the operator role
+        especially), then apply the same role filter ``validate_config`` uses
+        for its echo. The result resubmits cleanly as a repeat-run seed.
+        """
+        declared = {
+            name: value
+            for name, value in _flatten(stored).items()
+            if name in self.keys
+        }
+        return self.project(_unflatten(declared), role)
+
     def validate(self, config: dict[str, Any], role: CallerRole) -> dict[str, Any]:
         errors = sorted(Draft202012Validator(self.schema).iter_errors(config), key=str)
         if errors:
