@@ -138,5 +138,36 @@
   },
   "workflow": "stakeholder_analysis_workflow",
   "x-artifact-adapter": "stakeholder_exports",
+  "x-credential-requirements": {
+    "credentials": [],
+    "model_registry_digest": "sha256:56a2ba2bb579d99f6a5ea71bdb47e21fa2ac98afd665d689c7ac98ac16461f6b",
+    "models": [
+      {
+        "tier": "cheap"
+      },
+      {
+        "tier": "medium"
+      },
+      {
+        "capabilities": [
+          "native_web_search"
+        ],
+        "tier": "medium"
+      },
+      {
+        "tier": "smart"
+      },
+      {
+        "capabilities": [
+          "native_web_search"
+        ],
+        "tier": "smart"
+      }
+    ],
+    "resolved_credentials": [
+      "deepseek-api",
+      "openai-api"
+    ]
+  },
   "x-input-adapter": "inputset"
 }

@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from stromy_byok import CredentialId
 
+from stromy_workflows_mcp import credentials
 from stromy_workflows_mcp.contracts import (
     CallerRole,
     ConfigRejected,
@@ -192,17 +194,74 @@ def test_credential_id_grammar_matches_key_vault_secret_naming() -> None:
 # --- The shipped contracts ---------------------------------------------------
 
 
-def test_shipped_contracts_load_and_report_requirement_state() -> None:
-    """C6 authors the real blocks; until then every contract is undeclared.
+#: What each shipped contract resolves to under the deployed model profile
+#: (`deepseek_cheap_medium_openai_smart`), authored by C6 in Stromy and carried
+#: here by `scripts/sync_contracts.py`.
+#:
+#: Stated as literals rather than derived. This repo cannot see `models.yaml` —
+#: that is the whole reason the resolved list is written INTO the contract — so
+#: deriving it here is not merely redundant, it is impossible. What this pins is
+#: the commercial fact a client is quoted: a stakeholder-analysis run spends
+#: DeepSeek and OpenAI, a weekly-intel run spends OpenAI.
+SHIPPED_RESOLVED_CREDENTIALS = {
+    "stakeholder_analysis_workflow": ("deepseek-api", "openai-api"),
+    "weekly_intel_workflow": ("openai-api",),
+}
 
-    Pinned so the C6 authoring pass has to come back through this test rather
-    than landing a block the parser silently ignores.
+
+def test_shipped_contracts_declare_the_credentials_they_spend() -> None:
+    """C6 landed: every shipped contract now declares its requirement block.
+
+    ``declared`` is the load-bearing assertion, not the list. An undeclared
+    contract and one that declares an empty list are identical as data and
+    opposite as policy — the first means "nobody has authored this yet" and must
+    refuse a client-funded run, the second means "this workflow spends nothing".
+    Both registration tools fail closed on the first, so a contract silently
+    losing its block would take the feature offline while every test about the
+    list itself still passed.
     """
-    for path in sorted(Path(contracts_root()).glob("*.json")):
-        contract = load_contract(path.stem)
+    shipped = sorted(path.stem for path in Path(contracts_root()).glob("*.json"))
+    assert shipped, "no contracts are shipped at all"
+
+    for workflow in shipped:
+        contract = load_contract(workflow)
         described = contract.describe(CallerRole.OPERATOR)["credential_requirements"]
         assert described["declared"] is contract.requirements.declared
-        assert contract.requirements.declared is False, (
-            f"{path.stem} now declares credential requirements — update this test "
-            "and confirm the resolved list matches the deployed model profile"
+        assert contract.requirements.declared is True, (
+            f"{workflow} no longer declares credential requirements. A client-mode "
+            "run against it will refuse; regenerate the contract from Stromy."
         )
+        assert contract.requirements.model_registry_digest
+        assert contract.requirements.models, (
+            f"{workflow} declares a block with no model requirements — the "
+            "resolved list would then be unfalsifiable"
+        )
+
+
+def test_shipped_contracts_resolve_to_the_expected_providers() -> None:
+    for workflow, expected in SHIPPED_RESOLVED_CREDENTIALS.items():
+        contract = load_contract(workflow)
+        assert contract.requirements.resolved_credentials == expected
+
+
+def test_every_shipped_credential_can_actually_be_registered() -> None:
+    """The join this repo owns: a declared id the catalogue does not carry is a
+    key a client would be told to connect and then handed no way to connect."""
+    for workflow in SHIPPED_RESOLVED_CREDENTIALS:
+        contract = load_contract(workflow)
+        declared = set(contract.requirements.credentials) | set(
+            contract.requirements.resolved_credentials
+        )
+        for credential_id in declared:
+            assert credentials.CATALOGUE.get(CredentialId(credential_id)) is not None
+
+
+def test_a_client_never_sees_the_model_profile() -> None:
+    """The tiers and the registry digest describe how the platform is wired.
+    A client can act on none of it, and the digest in particular would tell them
+    when our routing changed."""
+    contract = load_contract("stakeholder_analysis_workflow")
+    described = contract.describe(CallerRole.CLIENT)["credential_requirements"]
+    assert described["resolved_credentials"] == ["deepseek-api", "openai-api"]
+    assert "models" not in described
+    assert "model_registry_digest" not in described
