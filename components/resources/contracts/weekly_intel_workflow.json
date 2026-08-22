@@ -152,5 +152,23 @@
   },
   "workflow": "weekly_intel_workflow",
   "x-artifact-adapter": "operator",
+  "x-credential-requirements": {
+    "credentials": [],
+    "model_registry_digest": "sha256:56a2ba2bb579d99f6a5ea71bdb47e21fa2ac98afd665d689c7ac98ac16461f6b",
+    "models": [
+      {
+        "tier": "smart"
+      },
+      {
+        "capabilities": [
+          "native_web_search"
+        ],
+        "tier": "smart"
+      }
+    ],
+    "resolved_credentials": [
+      "openai-api"
+    ]
+  },
   "x-input-adapter": "none"
 }

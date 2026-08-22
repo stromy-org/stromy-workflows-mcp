@@ -91,7 +91,7 @@ select = ["E", "F", "I", "UP", "ASYNC", "B", "PERF", "S"]
 # Public repo: this repo is public too, and a public caller cannot read a
 # private one — an exact PUBLIC tag is what removes the build-credential
 # problem entirely (ORG-PLAN-155 locked decision 3).
-workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-core.git", tag = "v0.4.0" }
+workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-core.git", tag = "v0.7.0" }
 # Result retrieval mints a read URL per authorized call; the account and container
 # are passed EXPLICITLY (>=0.6.0), because this library's own ASSET_STORE_ACCOUNT
 # names the brand-asset account rather than the workflow one.

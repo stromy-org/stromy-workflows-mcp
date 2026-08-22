@@ -77,8 +77,24 @@ def _v2_row(**overrides: Any) -> dict[str, Any]:
 
 
 def test_supported_schema_range_spans_the_expansion() -> None:
+    """A range, not a number — that is what lets this facade deploy ahead of a
+    migration.
+
+    The floor stays at v1 (still servable, just without the data plane) and the
+    ceiling has to reach every version this facade knows how to WRITE. It now
+    writes an execution snapshot, so a ceiling below that floor would mean the
+    facade refuses to serve the very registry it needs.
+    """
     assert registry.SUPPORTED_SCHEMA_MIN == 1
-    assert registry.SUPPORTED_SCHEMA_MAX == registry.DATA_PLANE_SCHEMA == 2
+    assert registry.SUPPORTED_SCHEMA_MAX >= registry.EXECUTION_METADATA_SCHEMA
+
+
+def test_the_two_feature_floors_are_distinct_and_ordered() -> None:
+    """Separate constants because they gate separate things. Collapsing them
+    would make an execution-snapshot write look available on a v2 registry."""
+    assert registry.DATA_PLANE_SCHEMA == 2
+    assert registry.EXECUTION_METADATA_SCHEMA == 4
+    assert registry.DATA_PLANE_SCHEMA < registry.EXECUTION_METADATA_SCHEMA
 
 
 def test_data_plane_features_refuse_v1_with_a_named_error() -> None:

@@ -119,6 +119,44 @@ def validate_config(
     return resolved
 
 
+def _execution_snapshot(workflow: str, client_slug: str) -> dict[str, Any] | None:
+    """The server's decisions about how THIS run gets funded, or ``None``.
+
+    Written once, at creation, and immutable for the life of the run and every
+    attempt of it. That immutability is the entire point: entitlements and
+    contracts are editable by design, so a runner that recomputed this per
+    attempt would let an edit made between a failure and its retry silently move
+    who pays for the retry — against a client who approved neither price.
+
+    Every field is SERVER-DERIVED. The policy comes from the entitlement table,
+    the credential IDs and the registry digest from the generated contract.
+    Nothing here is reachable from caller ``config``, and nothing here is a
+    secret — these are credential *identifiers*, never values and never aliases.
+
+    ``None`` when the contract declares no requirements. Undeclared and
+    "declares it needs nothing" are opposite policies that look identical as
+    data, so the absence is preserved rather than flattened into an empty
+    snapshot the runner would read as a declaration.
+    """
+    requirements = load_contract(workflow).requirements
+    if not requirements.declared:
+        return None
+    return {
+        "credential_policy": credential_policy(workflow, client_slug),
+        "credentials": list(requirements.credentials),
+        "resolved_credentials": list(requirements.resolved_credentials),
+        # The semantic requirements travel too, so the runner can re-derive the
+        # concrete list against ITS models.yaml and notice a disagreement. A
+        # snapshot carrying only the concrete answer could not be checked — it
+        # would be the claim and the evidence at once.
+        "models": [
+            {"tier": model.tier, "capabilities": list(model.capabilities), "pin": model.pin}
+            for model in requirements.models
+        ],
+        "model_registry_digest": requirements.model_registry_digest,
+    }
+
+
 def _persist_start(
     *,
     run_id: str,
@@ -163,6 +201,19 @@ def _persist_start(
             if dispatch_id is not None:
                 registry.require_data_plane(version, "queue dispatch")
                 registry.set_dispatch(conn, run_id, dispatch_id)
+            # Pinned in the SAME transaction as the insert. A run that reached a
+            # runner before its snapshot landed would be a client-mode run the
+            # runner reads as unpinned — and an unpinned run binds nothing, which
+            # is exactly the silent fall-through to operator spend this plane
+            # exists to close.
+            #
+            # Skipped below schema v4 rather than failed: the facade can be
+            # deployed ahead of the migration, and a run created in that window
+            # behaves precisely as runs did before this feature existed.
+            if version >= registry.EXECUTION_METADATA_SCHEMA:
+                snapshot = _execution_snapshot(name, client_slug)
+                if snapshot is not None:
+                    registry.pin_execution_metadata(conn, run_id, snapshot)
             run = registry.get_run(conn, run_id) or run
     return run
 
