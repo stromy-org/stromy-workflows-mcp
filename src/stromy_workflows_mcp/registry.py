@@ -50,8 +50,16 @@ DbConnection = core.DbConnection
 #: NULLs and pretending the feature works.
 DATA_PLANE_SCHEMA = 2
 
+#: Schema version at which ``runs.execution_metadata_json`` exists (ORG-PLAN-206
+#: C5). Below it a run simply carries no pinned snapshot, which is the same state
+#: as a run created before this facade started writing one — so the pin is
+#: SKIPPED rather than refused. That is what lets this facade deploy ahead of the
+#: migration instead of requiring a coordinated cutover.
+EXECUTION_METADATA_SCHEMA = 4
+
 __all__ = [
     "DATA_PLANE_SCHEMA",
+    "EXECUTION_METADATA_SCHEMA",
     "SUPPORTED_SCHEMA_MAX",
     "SUPPORTED_SCHEMA_MIN",
     "DbConnection",
@@ -68,6 +76,7 @@ __all__ = [
     "list_events",
     "list_runs",
     "mark_dispatch_failed",
+    "pin_execution_metadata",
     "mark_failed",
     "new_run_id",
     "request_resume",
@@ -246,6 +255,19 @@ def set_dispatch(conn: DbConnection, run_id: str, dispatch_id: str) -> None:
 def set_input_set(conn: DbConnection, run_id: str, session_id: str) -> None:
     """Bind the attached input set to the run. Same transaction as the insert."""
     core.set_input_set(conn, run_id, session_id)
+
+
+def pin_execution_metadata(
+    conn: DbConnection, run_id: str, metadata: dict[str, Any]
+) -> dict[str, Any]:
+    """Write this run's server-derived execution snapshot, exactly once.
+
+    Compare-and-set in the core: an identical re-pin is a no-op (the create path
+    is idempotency-keyed and can legitimately run twice), and a *different*
+    snapshot raises. Called in the same transaction as the insert, so a run can
+    never reach a runner before the snapshot that says how to fund it.
+    """
+    return core.pin_execution_metadata(conn, run_id, metadata)
 
 
 def mark_dispatch_failed(conn: DbConnection, run_id: str, reason: str) -> None:
