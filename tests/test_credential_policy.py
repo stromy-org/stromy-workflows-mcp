@@ -139,11 +139,29 @@ def test_entitled_clients_reads_the_object_form(monkeypatch) -> None:
 # --- The shipped registry ----------------------------------------------------
 
 
-def test_shipped_registry_is_v2_and_bills_nobody_new() -> None:
-    """C4 must change no client's billing on its own.
+#: The only slug allowed to ship on `client`. Stromy is its own client — the
+#: self-client dogfooding surface — so moving it costs no external party
+#: anything, which is exactly why the C6 end-to-end proof runs there.
+SELF_CLIENT = "stromy"
 
-    The migration's whole safety argument is that every existing grant lands on
-    `operator`; flipping one to `client` is a separate, deliberate commercial act.
+
+def test_shipped_registry_bills_no_external_client_without_a_decision() -> None:
+    """No *paying* client's billing moves as a side effect of a code change.
+
+    C4's original form asserted every shipped grant was `operator`, on the
+    argument that flipping one is a separate commercial act. C6 then made
+    exactly that act — for the self-client, and for one reason: the credential
+    plane cannot be proven end to end without a pair on `client`, and proving it
+    on `stromy` keeps a live client out of the experiment. Flipping
+    `dukestrategies` instead would have made every Duke run demand a key Duke has
+    never registered, failing them all closed at stage `credentials` — a real
+    outage staged as a test.
+
+    So the guard is narrowed rather than dropped, and it is narrowed to the one
+    thing worth guarding: a slug that is somebody else's company must not arrive
+    on client-funded billing through a merge. Deleting this test would have been
+    the easy way to make the flip green, and would have retired the only
+    mechanism that makes the next flip deliberate.
     """
     raw = json.loads(Path(entitlements_path()).read_text())
     assert raw["version"] == 2
@@ -152,10 +170,31 @@ def test_shipped_registry_is_v2_and_bills_nobody_new() -> None:
     assert table, "the shipped registry parsed to nothing"
     for workflow, clients in table.items():
         for slug, policy in clients.items():
+            if slug == SELF_CLIENT:
+                continue
             assert policy == POLICY_OPERATOR, (
-                f"{workflow}/{slug} ships on {policy!r}; C4 must migrate every "
-                "existing grant to 'operator'"
+                f"{workflow}/{slug} ships on {policy!r}. Moving an external "
+                "client onto client-funded billing is a commercial act taken "
+                "with that client, not a code change — if this is deliberate, "
+                "say so here and in the registry's note."
             )
+
+
+def test_the_self_client_is_the_one_pair_proving_the_client_path() -> None:
+    """The flip above is an allowance, not a wildcard — assert it was USED.
+
+    Without this, `stromy` could silently drift back to `operator` and the
+    narrowed guard would still pass, leaving the whole client-funded path with
+    no shipped instance and nothing exercising it end to end.
+    """
+    table = _parse(json.loads(Path(entitlements_path()).read_text()))
+    on_client = {
+        (workflow, slug)
+        for workflow, clients in table.items()
+        for slug, policy in clients.items()
+        if policy == POLICY_CLIENT
+    }
+    assert on_client == {("stakeholder_analysis_workflow", SELF_CLIENT)}
 
 
 def test_shipped_registry_uses_the_object_form() -> None:
