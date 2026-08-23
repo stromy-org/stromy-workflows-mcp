@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any, Protocol
@@ -23,7 +24,7 @@ from . import credentials, input_sessions, registry
 from .aca import AcaJobClient, JobStartError, PreparedJob
 from .blobs import AzureStagedReader, AzureStagedWriter, output_container, storage_account
 from .config import settings
-from .contracts import CallerRole, Contract, ContractError, load_contract
+from .contracts import CallerRole, ConfigRejected, Contract, ContractError, load_contract
 from .dispatch import (
     Dispatcher,
     DispatchError,
@@ -436,6 +437,50 @@ def list_runs(scope: CallerScope, limit: int = 50) -> list[dict[str, Any]]:
     return [run.public() for run in runs]
 
 
+#: Ceiling on a resume payload. Generous for what this channel is actually for —
+#: an edited questionnaire, a handful of overrides — and far below anything that
+#: would be an attempt to move bulk data through it.
+MAX_RESUME_PAYLOAD_BYTES = 64 * 1024
+
+
+def _validate_resume_payload(payload: Any) -> None:
+    """Reject a resume payload that is not a bounded JSON object.
+
+    This channel had no validation at all: whatever a caller sent was persisted
+    verbatim into ``config_json._resume`` and replayed into the graph on resume.
+    The graph's own interrupt handler is what interprets it — and confining the
+    PATHS it may name is that layer's job (Stromy's ``resolve_review_path_sync``)
+    — but the shape and the size belong here, at the boundary that owns the
+    column.
+
+    Both checks are about the same thing: the payload lands in a durable row that
+    a later container reads back. A non-object cannot be merged into the review
+    state at all, and an unbounded one is a way to write arbitrarily large values
+    into the registry through a tool whose purpose is to answer a question.
+    """
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise ConfigRejected(
+            f"resume_payload must be a JSON object; got {type(payload).__name__}",
+            code="resume_payload_invalid",
+        )
+    try:
+        encoded = json.dumps(payload)
+    except (TypeError, ValueError) as exc:
+        raise ConfigRejected(
+            f"resume_payload must be JSON-serializable: {exc}",
+            code="resume_payload_invalid",
+        ) from exc
+    size = len(encoded.encode("utf-8"))
+    if size > MAX_RESUME_PAYLOAD_BYTES:
+        raise ConfigRejected(
+            f"resume_payload is {size} bytes, above the "
+            f"{MAX_RESUME_PAYLOAD_BYTES}-byte ceiling",
+            code="resume_payload_too_large",
+        )
+
+
 async def resume_run(
     run_id: str,
     resume_payload: Any,
@@ -444,6 +489,7 @@ async def resume_run(
     job_client: JobClient | None = None,
     dispatcher: Dispatcher | None = None,
 ) -> dict[str, Any]:
+    _validate_resume_payload(resume_payload)
     client = job_client or AcaJobClient()
     dispatcher = dispatcher or build_dispatcher(client)
     queued = isinstance(dispatcher, QueueDispatcher)

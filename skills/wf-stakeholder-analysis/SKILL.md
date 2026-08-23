@@ -100,10 +100,20 @@ file:
 
 Call `finalize_input_session(handle)` — immediately when every file was inline or
 agent-uploaded, or after the user confirms their browser uploads landed
-(`get_input_session` shows per-file progress). Submit the returned `inputset:<uuid>`
-handle as the workflow's `input_set`
-config field. Never invent a handle, and never reuse another run's — a session attaches
-to exactly one run.
+(`get_input_session` shows per-file progress). On the browser path the upload page
+finalizes the session itself the moment the last file lands, so your call is
+usually a **confirmation, not the trigger** — it is idempotent and returns the
+same `finalized_at`. Treat a session that is already finalized as success, never
+as a surprise. Submit the returned `inputset:<uuid>` handle as the workflow's
+`input_set` config field. Never invent a handle, and never reuse another run's —
+a session attaches to exactly one run.
+
+**A session expires.** `create_input_session` returns `expires_at`; after it, the
+capability link stops working and the session cannot be revived — a fresh
+`create_input_session` mints new storage keys, so **every file must be uploaded
+again**, including ones that already landed. If the user has been away a while,
+check `get_input_session` before telling them to click an old link, and re-mint
+proactively rather than letting them discover it mid-upload.
 
 ## Interview and configuration
 
@@ -193,9 +203,15 @@ the first poll is slow.
 - **`paused`:** present the complete interrupt/questionnaire payload in chat. Let the
   user review or edit it, show the exact resume payload, then call `resume_run` only
   after their confirmation. Continue polling the same `run_id`.
-- **`completed`:** call `get_results(run_id)` and surface every available artifact link,
-  distinguishing the durable destination link from any temporary download link.
-  Each `published` artifact carries a `download_url` that **expires** (see
+  - **If the payload comes back empty or thin** — no `questionnaire_outputs`, empty
+    previews — say so plainly instead of presenting a blank form as if there were
+    nothing to review. Check `questionnaire_diagnostics`: when present it carries the
+    generator's per-category `errors`, which is the actual explanation. Report what it
+    says and let the user decide whether to resume anyway or stop — an empty review
+    gate usually means the analysis below it will be thin too.
+- **`completed`:** call `get_results(run_id)` and surface every available artifact link.
+  There is only ONE kind of link — do not promise a permanent one:
+  each `published` artifact carries a `download_url` that **expires** (see
   `download_url_ttl_seconds`, typically 15 minutes). Say so when you hand one over,
   and if the user comes back later, call `get_results` again to mint a fresh link
   rather than re-sending the stale one or reporting the artifact as lost — the
@@ -204,7 +220,12 @@ the first poll is slow.
   could not be minted this call, so retry `get_results` before escalating.
 - **`failed`:** report the stored error and `run_id`; do not imply a report exists.
   The `failure` block, when present, says which stage died (`failure.stage`) and whether
-  the run is worth retrying (`failure.retryable`). If it is, offer `retry_run(run_id)`
+  the same configuration could plausibly produce a different outcome
+  (`failure.retryable`). **`retryable: false` means a rerun is guaranteed to fail
+  identically** — a malformed contract, a digest mismatch, an output the workflow
+  never produces. Do not offer a retry there; report what died and stop, because
+  offering one spends the user's compute to reproduce an answer we already have.
+  When it IS retryable, offer `retry_run(run_id)`
   and explain what that does in plain terms: it starts a **new** run that reuses the
   work the failed one already completed, so it is usually much quicker and cheaper than
   starting over. Note the new `run_id` it returns and poll *that* one — the original
