@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import tool
 
 from stromy_workflows_mcp import identity, service
+from stromy_workflows_mcp.response_budget import fit_json_result
 
 
 def _error(exc: Exception) -> ToolError:
@@ -245,12 +246,39 @@ async def run_status(run_id: str) -> dict[str, Any]:
 
 
 @tool
-async def list_runs(limit: int = 50) -> list[dict[str, Any]]:
-    """List recent runs visible to the caller's verified client roles."""
+async def list_runs(limit: int = 50) -> dict[str, Any]:
+    """List recent runs visible to the caller's verified client roles.
+
+    Returns ``{runs, returned_count, truncated, warnings}``, newest first.
+
+    ``limit`` bounds how many runs are asked for; it does not bound how large
+    they are, and run records grow as workflows add status detail. Measured on a
+    2,000-run history this surface returned over a million characters
+    (ORG-PLAN-221), so the complete response is fitted to the character budget
+    and says so when it trims.
+    """
     try:
-        return await asyncio.to_thread(service.list_runs, identity.caller_scope(), limit)
+        runs = await asyncio.to_thread(service.list_runs, identity.caller_scope(), limit)
     except Exception as exc:
         raise _error(exc) from exc
+
+    def _build(prefix, budget_meta, warning):
+        return {
+            "runs": list(prefix),
+            "returned_count": len(prefix),
+            "total_listed": len(runs),
+            "truncated": len(prefix) < len(runs),
+            "warnings": [warning] if warning else [],
+            "response_budget": budget_meta,
+        }
+
+    return fit_json_result(
+        runs,
+        build_payload=_build,
+        narrowing_hint=(
+            "Lower `limit`, or fetch one run's detail with run_status(run_id)."
+        ),
+    ).payload
 
 
 @tool
