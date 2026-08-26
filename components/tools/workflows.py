@@ -76,6 +76,14 @@ async def start_run(
     ``client_context.client_slug`` selects one of the caller's verified
     ``client.<slug>`` app roles; it never grants scope by itself. Reusing an
     idempotency key returns the original run instead of launching a duplicate.
+
+    On a client-funded workflow this refuses BEFORE creating anything if the
+    client has not registered every credential the workflow requires, and the
+    error names the ones still outstanding. That is a fast-fail courtesy, not
+    the enforcement point — the runner resolves and fails closed on its own —
+    so a run can still die at stage ``credentials`` if a key is disabled
+    between the check and the execution. When you see that refusal, mint a
+    registration link per named credential rather than retrying.
     """
     try:
         return await service.start_run(
@@ -151,13 +159,28 @@ async def create_credential_registration_link(
     to the vault without passing through this conversation. **Never ask for a
     key in chat and never accept one as a tool argument**: this link is the
     only supported path, precisely so the value cannot land in a transcript.
+    If a key is pasted to you anyway, say so plainly and tell them to rotate it;
+    a value that reached a transcript is compromised regardless of who sent it.
+
+    **Present the URL as a clickable link** (markdown ``[Register the key](url)``)
+    rather than as bare text the person has to select and copy. The single-use
+    token is the security boundary here — the copy-paste step protects nothing,
+    it is just friction, and operators have asked for the link to be clickable.
+
+    **One link registers ONE credential, and a run needs them all.** A
+    client-funded run resolves every credential the workflow requires before it
+    starts and fails on the first missing one, so registering a single key is
+    usually not finishing the job. The response's ``still_outstanding`` lists
+    what else this client owes — if it is non-empty, mint a link for each and
+    hand them over together, so the person makes one trip to the browser instead
+    of one per key.
 
     The link is single-use and short-lived. A reload does not burn it; only a
     successful save does. Reissue freely — that is cheaper than a long TTL.
 
     ``credential_id`` must be one the workflow declares (see
-    ``describe_workflow``'s ``credential_requirements``). Use
-    ``action="disconnect"`` to mint a link that disables the registered key
+    ``describe_workflow``'s ``credential_requirements.required_credentials``).
+    Use ``action="disconnect"`` to mint a link that disables the registered key
     instead; rotation needs no special action, since re-registering replaces it.
     """
     try:
@@ -182,9 +205,20 @@ async def get_credential_status(
 
     Returns per-credential status only — never a key, and never any part of one.
 
-    Read ``credential_policy`` first. On ``operator`` the client's runs spend
-    Stromy's keys and there is nothing for them to register; only on ``client``
-    does an unregistered credential mean an outstanding action.
+    **Read ``ready_to_run`` first — it is the answer to "can we start?"** A run
+    resolves EVERY required credential before it begins, so per-credential
+    statuses do not compose the way they look like they should: two entries
+    reading ``registered`` and one reading ``not_registered`` means the workflow
+    cannot run at all, not that it is two-thirds ready. ``outstanding`` names
+    exactly what is still owed.
+
+    ``ready_to_run`` is ``true``/``false``/``null``. **``null`` means unknown**,
+    not "no" — the credential store could not be read. Never report ``null`` as
+    "you still have keys to connect".
+
+    ``credential_policy`` explains the whole shape: on ``operator`` the client's
+    runs spend Stromy's keys, nothing is owed, and ``ready_to_run`` is always
+    true. Only on ``client`` does an unregistered credential mean an action.
 
     ``status`` is ``registered``, ``not_registered``, or ``unavailable``.
     **``unavailable`` is not ``not_registered``** — it means the server cannot

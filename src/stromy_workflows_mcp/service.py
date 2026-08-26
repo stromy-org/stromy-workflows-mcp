@@ -12,6 +12,7 @@ from stromy_byok import (
     DEFAULT_TTL_SECONDS,
     AuditAction,
     AuditEvent,
+    CredentialId,
     GrantAction,
     NullCredentialStore,
     Subject,
@@ -33,6 +34,7 @@ from .dispatch import (
     new_dispatch_id,
 )
 from .entitlements import (
+    POLICY_CLIENT,
     credential_policy,
     require_entitled,
     require_visible,
@@ -118,6 +120,78 @@ def validate_config(
         require_entitled(name, owner, scope)
         resolved["client_slug"] = owner
     return resolved
+
+
+class CredentialsNotReady(RuntimeError):
+    """A client-funded run was started before its credentials were registered.
+
+    Its own class so the tool layer can render it as an actionable message
+    rather than a generic failure — the caller's next step is a registration
+    link, which is different from every other reason a start can be refused.
+    """
+
+
+def _preflight_credentials(workflow: str, client_slug: str) -> None:
+    """Refuse a client-funded run that cannot be funded, before anything exists.
+
+    THIS IS NOT A SECURITY CONTROL. The runner resolves every credential itself
+    and fails closed; that check is the authoritative one and must never be
+    removed on the strength of this. What this buys is *where* the failure lands:
+    without it the run row is written, an ACA job is prepared, a container pulls
+    and boots, and only then does the run die at stage `credentials` — a slow,
+    billable round trip to reach an answer the facade already had.
+
+    It is also, deliberately, subject to TOCTOU: a key disabled between here and
+    the run still fails at the runner. That is fine precisely because this is an
+    optimisation. Treating it as the guarantee is the mistake to avoid.
+
+    Skipped entirely on operator policy, where nothing is owed, and on an
+    unprovisioned store, where "not registered" cannot be distinguished from
+    "cannot tell" — refusing on an unknown would ground every run the moment the
+    vault became unreadable, which is a worse failure than the one it prevents.
+
+    Blocking (Key Vault) — call it through ``asyncio.to_thread``.
+    """
+    if credential_policy(workflow, client_slug) != POLICY_CLIENT:
+        return
+    requirements = load_contract(workflow).requirements
+    if not requirements.declared:
+        # Undeclared is refused rather than skipped: with no statement of what
+        # the workflow spends there is nothing to inject, so a client-policy run
+        # would proceed on ambient operator keys — the silent fall-through this
+        # whole plane exists to close.
+        raise CredentialsNotReady(
+            f"workflow {workflow!r} declares no credential requirements yet, so a "
+            "client-funded run cannot be started against it"
+        )
+    store = credentials.credential_store()
+    if isinstance(store, NullCredentialStore):
+        return
+    subject = Subject(SubjectKind.CLIENT_SLUG, client_slug)
+    outstanding: list[str] = []
+    for credential_id in requirements.required:
+        try:
+            spec = credentials.CATALOGUE.get(credential_id)
+        except UnknownCredentialError:
+            # Drift is fatal here, unlike in the status surface: status reports
+            # so an operator can see it, but a run naming a credential nobody can
+            # register is a run that cannot be funded at all.
+            raise CredentialsNotReady(
+                f"workflow {workflow!r} requires credential {credential_id!r}, which "
+                "this server's catalogue does not know. This is an operator "
+                "problem, not something to register."
+            ) from None
+        if not store.exists(spec.credential_id, subject):
+            outstanding.append(str(spec.credential_id))
+    if outstanding:
+        raise CredentialsNotReady(
+            f"this workflow spends {len(requirements.required)} credential(s) and "
+            "resolves ALL of them before it starts, so it cannot run until every "
+            f"one is registered. Still outstanding: {', '.join(outstanding)}. "
+            "Mint a registration link per outstanding credential "
+            "(create_credential_registration_link) and register each before "
+            "starting the run."
+        )
 
 
 def _execution_snapshot(workflow: str, client_slug: str) -> dict[str, Any] | None:
@@ -285,6 +359,9 @@ async def start_run(
     # The INTERNAL shape: the runner needs the provider pins, so this must not go
     # through the caller-facing projection.
     _, normalized = _validated(name, config, scope)
+    # After validation (cheap and local, and the more common error) but BEFORE
+    # `prepare` — which is the first call that costs anything or creates state.
+    await asyncio.to_thread(_preflight_credentials, name, client_slug)
     run_id = registry.new_run_id()
     client = job_client or AcaJobClient()
     prepared = await client.prepare(run_id)
@@ -755,7 +832,7 @@ def create_credential_registration_link(
             workflow=workflow,
         )
     )
-    return {
+    payload = {
         "workflow": workflow,
         "client_slug": client_slug,
         "credential_id": str(spec.credential_id),
@@ -766,6 +843,27 @@ def create_credential_registration_link(
         "registration_url": f"{_public_base_url()}/keys?token={grant.token}",
         "expires_in_seconds": DEFAULT_TTL_SECONDS,
     }
+    # What ELSE this workflow still needs (ORG-228). A run resolves every
+    # required credential before it starts, so minting one link and stopping
+    # leaves the client believing they are done. Reporting the rest here — at
+    # the moment the caller is demonstrably in a registering frame of mind — is
+    # what turns two round trips into one. Best-effort: a store fault must not
+    # fail a mint that otherwise succeeded, because the link in hand is still
+    # good and losing it costs the client a browser trip for nothing.
+    try:
+        store = credentials.credential_store()
+        if not isinstance(store, NullCredentialStore):
+            subject_for_check = Subject(SubjectKind.CLIENT_SLUG, client_slug)
+            payload["still_outstanding"] = [
+                other
+                for other in requirements.required
+                if other != str(spec.credential_id)
+                and other in credentials.CATALOGUE
+                and not store.exists(CredentialId(other), subject_for_check)
+            ]
+    except Exception:  # noqa: BLE001 - advisory only; never fail the mint
+        logger.warning("could not compute still_outstanding for %s", workflow, exc_info=True)
+    return payload
 
 
 def credential_status(
@@ -821,9 +919,7 @@ def credential_status(
     subject = Subject(SubjectKind.CLIENT_SLUG, client_slug)
     drift: list[str] = []
     entries: list[dict[str, Any]] = []
-    for credential_id in sorted(
-        set(requirements.credentials) | set(requirements.resolved_credentials)
-    ):
+    for credential_id in requirements.required:
         try:
             spec = credentials.CATALOGUE.get(credential_id)
         except UnknownCredentialError:
@@ -860,6 +956,54 @@ def credential_status(
     payload["credentials"] = entries
     if drift:
         payload["catalogue_drift"] = drift
+
+    # ALL-OR-NOTHING, STATED RATHER THAN INFERRED (ORG-228).
+    #
+    # A client-funded run resolves EVERY required credential before the graph is
+    # built and fails on the first missing one, and client mode scrubs every
+    # caller-funded alias so an unregistered one cannot quietly fall back to the
+    # operator's key. Both are deliberate. But listing each credential's status
+    # independently left "you need all of them before anything will start" to be
+    # inferred — and on 2026-08-26 a reader registered the one credential they
+    # recognised and got a run that died at stage `credentials` for a reason this
+    # surface had not predicted.
+    #
+    # `ready_to_run` is None, never False, when the store cannot answer. False
+    # means "you have outstanding work"; an unprovisioned store means we do not
+    # know — the same distinction `unavailable` vs `not_registered` exists to
+    # preserve, and collapsing it here would reintroduce the bug one level up.
+    outstanding = [
+        entry["credential_id"] for entry in entries if entry["status"] == "not_registered"
+    ]
+    if policy != POLICY_CLIENT:
+        # Nothing is owed on operator policy, so a run is never blocked on
+        # registration and `outstanding` would misread as a to-do list.
+        payload["ready_to_run"] = True
+        payload["outstanding"] = []
+    elif not provisioned:
+        payload["ready_to_run"] = None
+        payload["outstanding"] = []
+    else:
+        payload["ready_to_run"] = not outstanding and not drift
+        payload["outstanding"] = outstanding
+        if outstanding:
+            payload["note"] = (
+                "This workflow spends "
+                f"{len(entries)} credential(s) and a run resolves ALL of them "
+                "before it starts, so it cannot run until every one is "
+                f"registered. Still outstanding: {', '.join(outstanding)}. "
+                "Mint a registration link per outstanding credential."
+            )
+        elif drift:
+            # Ready would be a lie: a contract naming an id this catalogue lacks
+            # is a credential nobody can register, so the run cannot be funded.
+            payload["note"] = (
+                "Every registerable credential is connected, but this workflow "
+                f"names {', '.join(drift)}, which this server's catalogue does "
+                "not know — so a run cannot be funded until that drift is fixed. "
+                "This is an operator problem, not something to register."
+            )
+
     if not provisioned:
         payload["note"] = (
             "The credential store is not provisioned on this server, so "
