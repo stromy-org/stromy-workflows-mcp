@@ -74,12 +74,43 @@ def test_requirements_parse_into_typed_fields() -> None:
     assert parsed.models[0].pin is None
 
 
-def test_describe_surfaces_requirements_to_a_client() -> None:
-    described = _contract(_REQUIREMENTS).describe(CallerRole.CLIENT)
-    surfaced = described["credential_requirements"]
+def test_describe_surfaces_one_authoritative_list_to_a_client() -> None:
+    """The union, under one name, and NOT the two source lists.
+
+    Which side an id arrives on — stated concretely, or derived from a model
+    tier — is an authoring detail the client cannot act on, and splitting it
+    across two peer arrays invites reading one of them as the answer.
+    """
+    surfaced = _contract(_REQUIREMENTS).describe(CallerRole.CLIENT)["credential_requirements"]
     assert surfaced["declared"] is True
+    assert surfaced["required_credentials"] == ["apify-api", "deepseek-api", "openai-api"]
+    assert "credentials" not in surfaced
+    assert "resolved_credentials" not in surfaced
+
+
+def test_an_empty_concrete_list_never_reaches_a_client_as_the_answer() -> None:
+    """The ORG-229 regression, pinned to the shape that caused it.
+
+    `stakeholder_analysis_workflow` ships `credentials: []` with two providers
+    resolved from its model tiers — entirely legitimate, and every gate uses the
+    union. But a client-facing block showing an empty array named `credentials`
+    reads as "this workflow needs none", the exact opposite of the truth, and it
+    misled a competent reader on the first real client-funded run (2026-08-26).
+    """
+    requirements = dict(_REQUIREMENTS, credentials=[])
+    surfaced = _contract(requirements).describe(CallerRole.CLIENT)["credential_requirements"]
+    assert surfaced["required_credentials"] == ["deepseek-api", "openai-api"]
+    # Nothing a client reads may be an empty list while credentials are required.
+    assert [] not in surfaced.values()
+
+
+def test_the_operator_still_gets_the_split() -> None:
+    """`manifest_drift` and the C5 routing digest are ABOUT the split, so
+    collapsing it everywhere would have cost a real capability."""
+    surfaced = _contract(_REQUIREMENTS).describe(CallerRole.OPERATOR)["credential_requirements"]
     assert surfaced["credentials"] == ["apify-api"]
     assert surfaced["resolved_credentials"] == ["deepseek-api", "openai-api"]
+    assert surfaced["required_credentials"] == ["apify-api", "deepseek-api", "openai-api"]
 
 
 def test_describe_withholds_model_internals_from_a_client() -> None:
@@ -262,6 +293,6 @@ def test_a_client_never_sees_the_model_profile() -> None:
     when our routing changed."""
     contract = load_contract("stakeholder_analysis_workflow")
     described = contract.describe(CallerRole.CLIENT)["credential_requirements"]
-    assert described["resolved_credentials"] == ["deepseek-api", "openai-api"]
+    assert described["required_credentials"] == ["deepseek-api", "openai-api"]
     assert "models" not in described
     assert "model_registry_digest" not in described

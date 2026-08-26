@@ -145,6 +145,19 @@ class CredentialRequirements:
     resolved_credentials: tuple[str, ...] = ()
     model_registry_digest: str | None = None
 
+    @property
+    def required(self) -> tuple[str, ...]:
+        """Every credential a client-funded run of this workflow must have.
+
+        The union, sorted, and the ONLY number that answers "what do I have to
+        register". `credentials` are stated concretely by the contract;
+        `resolved_credentials` are derived from its model tiers. Which side an id
+        arrives on is an authoring detail — every gate in this service already
+        keys off the union, so this is that expression named once instead of
+        rebuilt at each call site.
+        """
+        return tuple(sorted(set(self.credentials) | set(self.resolved_credentials)))
+
     def describe(self, role: CallerRole) -> dict[str, Any]:
         """What this caller may see of the workflow's credential requirements.
 
@@ -154,13 +167,24 @@ class CredentialRequirements:
         tier-3 config keys do: they describe which provider and profile Stromy
         runs behind the tier, which is a provider-locked commercial fact rather
         than something the client configures.
+
+        `required_credentials` leads, and the two source lists are OPERATOR-ONLY
+        (ORG-229). A shipped contract can legitimately declare
+        `credentials: []` while resolving two providers from its model tiers —
+        which is exactly what `stakeholder_analysis_workflow` does — and a
+        client-facing surface showing an empty array named `credentials` reads as
+        "this workflow needs none", the precise opposite of the truth. That was
+        not hypothetical: it misled a competent reader on the first real run
+        (2026-08-26). Operators still get both sides, because `manifest_drift`
+        and the C5 routing-digest check are about the split.
         """
         payload: dict[str, Any] = {
             "declared": self.declared,
-            "credentials": list(self.credentials),
-            "resolved_credentials": list(self.resolved_credentials),
+            "required_credentials": list(self.required),
         }
         if role is CallerRole.OPERATOR:
+            payload["credentials"] = list(self.credentials)
+            payload["resolved_credentials"] = list(self.resolved_credentials)
             payload["models"] = [
                 {
                     "tier": model.tier,
