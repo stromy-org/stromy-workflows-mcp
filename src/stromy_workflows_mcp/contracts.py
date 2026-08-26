@@ -183,8 +183,17 @@ class CredentialRequirements:
             "required_credentials": list(self.required),
         }
         if role is CallerRole.OPERATOR:
-            payload["credentials"] = list(self.credentials)
-            payload["resolved_credentials"] = list(self.resolved_credentials)
+            # Each side appears only when it HAS members. The split is
+            # information only when there is a split: an empty array named
+            # `credentials` beside a populated `required_credentials` reads as
+            # "needs none" to an operator exactly as it did to a client, and it
+            # misread that way again on 2026-08-27 — one projection over from
+            # where ORG-229 was fixed. Nothing in the service reads these from
+            # `describe`; drift and the routing digest use the contract object.
+            if self.credentials:
+                payload["credentials"] = list(self.credentials)
+            if self.resolved_credentials:
+                payload["resolved_credentials"] = list(self.resolved_credentials)
             payload["models"] = [
                 {
                     "tier": model.tier,
