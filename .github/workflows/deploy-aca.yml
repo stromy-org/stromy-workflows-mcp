@@ -14,6 +14,15 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - "skills/**"
+      # `components/**` is DEPLOYABLE, not config-adjacent: the Dockerfile does
+      # `COPY components/ ./components/`, so the entitlement registry and the
+      # generated contracts are baked into the image and read from PROJECT_ROOT
+      # at runtime. Omitting it meant a change to the BILLING AND AUTHORIZATION
+      # table could merge with green CI and never reach production — the failure
+      # is silent in the worst direction, since the registry still reads exactly
+      # as it did before and nothing reports a gap (found 2026-08-26: the
+      # ORG-PLAN-206 self-client flip merged and deployed nothing).
+      - "components/**"
       - ".github/workflows/deploy-aca.yml"
   workflow_dispatch:
 
