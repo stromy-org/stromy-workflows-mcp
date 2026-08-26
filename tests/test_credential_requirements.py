@@ -104,6 +104,24 @@ def test_an_empty_concrete_list_never_reaches_a_client_as_the_answer() -> None:
     assert [] not in surfaced.values()
 
 
+def test_no_projection_shows_an_empty_credential_list_to_anyone() -> None:
+    """The ORG-229 misread reappeared in the OPERATOR view on 2026-08-27.
+
+    `stakeholder_analysis_workflow` states no credentials concretely and resolves
+    two from its model tiers, so the operator payload carried `credentials: []`
+    directly beside a populated `required_credentials`. A reader flagged it
+    unprompted for the same reason a client would have: the emptiest-looking
+    field has the most authoritative-sounding name. Each side now appears only
+    when it has members, in every role.
+    """
+    requirements = dict(_REQUIREMENTS, credentials=[])
+    for role in CallerRole:
+        surfaced = _contract(requirements).describe(role)["credential_requirements"]
+        assert surfaced["required_credentials"] == ["deepseek-api", "openai-api"]
+        assert "credentials" not in surfaced
+        assert [] not in surfaced.values()
+
+
 def test_the_operator_still_gets_the_split() -> None:
     """`manifest_drift` and the C5 routing digest are ABOUT the split, so
     collapsing it everywhere would have cost a real capability."""
