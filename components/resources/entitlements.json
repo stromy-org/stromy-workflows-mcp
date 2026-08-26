@@ -9,11 +9,11 @@
           "credential_policy": "operator"
         },
         "stromy": {
-          "credential_policy": "operator"
+          "credential_policy": "client"
         }
       },
       "skill": "wf-stakeholder-analysis",
-      "note": "Duke Strategies pilot (ORG-PLAN-070). Stromy is the self-client full-fleet test surface -- the wf-* skills ship in stromy-plugin, so the slug must be entitled here (validate-plugin-completeness Invariant #19) and hold the client.stromy app role."
+      "note": "Duke Strategies pilot (ORG-PLAN-070). Stromy is the self-client full-fleet test surface -- the wf-* skills ship in stromy-plugin, so the slug must be entitled here (validate-plugin-completeness Invariant #19) and hold the client.stromy app role. stromy is on credential_policy 'client' since 2026-08-23 (ORG-PLAN-206 C6): it is the ONLY pair proving the BYOK path end to end, and proving it on the self-client is what keeps a live client out of the experiment -- flipping dukestrategies would have made every Duke run require a key Duke has not registered, failing them all closed at stage credentials. Duke's own flip stays a deliberate commercial act, taken with Duke, after their key is registered."
     },
     "weekly_intel_workflow": {
       "clients": {},

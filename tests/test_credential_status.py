@@ -73,15 +73,37 @@ def test_reports_each_declared_credential_and_the_billing_policy(
     assert status["client_slug"] == "stromy"
     assert status["declared"] is True
     assert status["store_provisioned"] is True
-    # Every shipped grant is `operator` — the client owes nothing, and saying so
-    # is what stops "not_registered" reading as an outstanding action.
-    assert status["credential_policy"] == "operator"
+    # `stromy` is the self-client and ships on `client` (ORG-PLAN-206 C6), which
+    # is what makes this the interesting direction to assert: on `client` an
+    # unregistered credential IS an outstanding action, and the tool's contract
+    # is that a reader must consult the policy before saying so. The operator
+    # reading — "not_registered means the client owes nothing" — is covered by
+    # test_operator_policy_reports_no_outstanding_action below.
+    assert status["credential_policy"] == "client"
     assert [entry["credential_id"] for entry in status["credentials"]] == [
         "apify-api",
         "openai-api",
     ]
     assert all(entry["status"] == "not_registered" for entry in status["credentials"])
     assert all(entry["signup_url"] for entry in status["credentials"])
+
+
+def test_operator_policy_reports_no_outstanding_action(
+    declared: None, vault: InMemoryCredentialStore
+) -> None:
+    """The other half of the reading, on a slug that still ships `operator`.
+
+    `not_registered` means opposite things under the two policies, and once the
+    self-client moved to `client` nothing else asserted the operator side against
+    the SHIPPED registry. Reading `dukestrategies` keeps both branches covered by
+    the real file rather than by a fixture that could drift away from it.
+    """
+    duke = CallerScope(frozenset({"dukestrategies"}))
+    status = _status(duke, "dukestrategies")
+    assert status["credential_policy"] == "operator"
+    # Same literal status as the client-policy case above — which is precisely
+    # why a caller must read the policy to know whether it is an action item.
+    assert all(entry["status"] == "not_registered" for entry in status["credentials"])
 
 
 def test_a_registered_key_reads_as_registered_without_returning_it(
