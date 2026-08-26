@@ -26,7 +26,11 @@ async def test_fs_read_skill(client):
     result = await client.call_tool(
         name="fs_read", arguments={"path": "skills/server-guide/SKILL.md"}
     )
-    assert len(result.data) > 0
+    # fs_read returns a page object, not a bare string — the body is in
+    # `content`, and `next_offset_chars` is the continuation handle.
+    assert result.data["content"]
+    assert result.data["next_offset_chars"] is None
+    assert result.data["truncated"] is False
 
 
 async def test_fs_read_traversal_blocked(client):
