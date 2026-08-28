@@ -224,6 +224,16 @@ async def get_credential_status(
     **``unavailable`` is not ``not_registered``** — it means the server cannot
     read registration state at all, so never tell someone they have no key
     connected on the strength of it.
+
+    **``registered`` means "a key was saved", NOT "that key still works."**
+    ``validation_at_registration`` is a stamp taken once, when the key was
+    saved; nothing re-checks it. A client who revokes or deletes the key at the
+    provider still reads ``registered`` here, still shows ``valid``, and
+    ``ready_to_run`` still says true — the run then fails at the provider with
+    an auth error. So if someone tells you they rotated, revoked or deleted a
+    key, treat it as ``not_registered`` regardless of what this says, and mint
+    them a fresh registration link. Registration is the only way to correct it;
+    there is no re-validate action.
     """
     try:
         return await asyncio.to_thread(

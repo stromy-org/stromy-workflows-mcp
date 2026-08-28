@@ -23,6 +23,8 @@ from stromy_byok import (
     NullCredentialStore,
     Subject,
     SubjectKind,
+    ValidationOutcome,
+    ValidationStatus,
 )
 
 from stromy_workflows_mcp import credentials, service
@@ -199,3 +201,40 @@ def test_a_store_fault_never_costs_the_caller_their_link(
     )
     assert minted["registration_url"]
     assert "still_outstanding" not in minted
+
+
+# --- what "registered" does NOT mean -----------------------------------------
+
+
+def test_the_validation_result_is_named_for_when_it_was_taken(
+    two_credentials: None, vault: InMemoryCredentialStore
+) -> None:
+    """`registered` means a key was saved, not that it still works.
+
+    The validation outcome is stamped once, beside `rotated_at`, at
+    `put_version`; nothing re-checks it. On 2026-08-27 the operator deleted the
+    OpenAI key they had registered the day before and this surface went on
+    reporting it `valid` — `ready_to_run` would have said true for a run
+    destined to fail at the provider with a 401.
+
+    Live re-validation is deliberately NOT the fix: it would bill a provider
+    round-trip on every status read and still be stale by the time a run
+    starts. The honest fix is a field name that cannot be read as present
+    tense, so a bare `validation` key must never come back.
+    """
+    vault.put_version(
+        "openai-api",
+        Subject(SubjectKind.CLIENT_SLUG, "stromy"),
+        SECRET,
+        outcome=ValidationOutcome(status=ValidationStatus.VALID),
+    )
+    entry = next(
+        item
+        for item in _status()["credentials"]
+        if item["credential_id"] == "openai-api"
+    )
+    assert entry["status"] == "registered"
+    assert entry["validation_at_registration"]
+    assert "validation" not in entry
+    # The stamp is only meaningful next to the moment it was taken.
+    assert entry["last_rotated_at"]
