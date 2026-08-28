@@ -950,8 +950,24 @@ def credential_status(
                 # Non-secret tags this service wrote. Whitelisted rather than
                 # passed through, so a future tag cannot become an accidental
                 # disclosure channel on a client-facing call.
-                entry["last_rotated_at"] = tags.get("rotated_at")
-                entry["validation"] = tags.get("validation")
+                if tags.get("rotated_at"):
+                    entry["last_rotated_at"] = tags["rotated_at"]
+                # NAMED FOR ITS TENSE, deliberately (2026-08-27).
+                #
+                # This is one stamp from one write: `_tags` records the
+                # validation outcome beside `rotated_at` at `put_version` and
+                # nothing ever re-checks it. A key the client revokes at the
+                # provider therefore keeps reading `registered` with a `valid`
+                # result forever, and `ready_to_run` will happily say true.
+                # That happened for real: the operator revoked the OpenAI key
+                # they had registered, and this surface went on reporting it
+                # good. Calling the field `validation` invited exactly one
+                # reading — that the key works NOW — which is the one thing it
+                # cannot attest. Live re-validation is not the fix: it would
+                # bill a provider round-trip on every status read and still be
+                # stale by the time a run starts.
+                if tags.get("validation"):
+                    entry["validation_at_registration"] = tags["validation"]
         entries.append(entry)
     payload["credentials"] = entries
     if drift:
