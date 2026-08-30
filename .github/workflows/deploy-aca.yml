@@ -53,6 +53,16 @@ jobs:
             echo "oidc_ready=false" >> "$GITHUB_OUTPUT"
             echo "OIDC not provisioned yet (vars.AZURE_CLIENT_ID is empty) — run Terraform first, then re-run this deploy. Skipping."
           fi
+          # Are the org App secrets visible to this repo? Decided HERE rather
+          # than with `continue-on-error` on the mint step, because a step that
+          # is red on EVERY run is indistinguishable from one that has just
+          # started failing — which is how a real token failure would hide.
+          if [ -n "${{ secrets.CI_APP_ID }}" ]; then
+            echo "app_creds=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "app_creds=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI_APP_ID is not set — skipping the internal-libs App token. Every dependency of this repo is public today (stromy-byok included), so the build is unaffected. If a PRIVATE internal dependency is ever added, provision CI_APP_ID/CI_APP_PRIVATE_KEY or the build will fail on an unauthenticated clone."
+          fi
 
       - name: Checkout
         if: steps.preflight.outputs.oidc_ready == 'true'
@@ -81,13 +91,18 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Mint stromy-ci App token (clone private internal libs)
-        # continue-on-error: on a PUBLIC satellite the org App secrets are not
-        # visible; the mint fails, the build secret is empty, and the
-        # Dockerfile's `if -s` guard skips the URL rewrite — an all-public
-        # dependency set still builds. A private-dep public satellite must
-        # vendor its own auth (see stromy-workflows-mcp).
-        if: steps.preflight.outputs.oidc_ready == 'true'
-        continue-on-error: true
+        # SKIPPED, not failed-and-tolerated (ORG-232). On a PUBLIC satellite the
+        # org App secrets are not visible, so this mint used to fail on every
+        # single deploy under `continue-on-error` — a permanent red annotation
+        # that trained everyone to ignore the one signal that would matter when
+        # the token genuinely broke. The pre-flight now decides up front whether
+        # credentials exist; when they do and the mint still fails, the deploy
+        # fails with it rather than degrading silently to an unauthenticated
+        # clone. The Dockerfile's `if -s /run/secrets/internal_libs_pat` guard
+        # keeps the all-public dependency set building with an empty secret.
+        if: >-
+          steps.preflight.outputs.oidc_ready == 'true' &&
+          steps.preflight.outputs.app_creds == 'true'
         uses: actions/create-github-app-token@v3
         id: app-token
         with:
