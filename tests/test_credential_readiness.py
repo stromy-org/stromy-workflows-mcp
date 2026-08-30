@@ -97,7 +97,50 @@ def test_registering_the_last_one_flips_it_ready(
     status = _status()
     assert status["ready_to_run"] is True
     assert status["outstanding"] == []
-    assert "note" not in status
+
+
+def test_the_green_verdict_states_what_it_does_not_cover(
+    two_credentials: None, vault: InMemoryCredentialStore
+) -> None:
+    """Green needs a note more than red does (ORG-237).
+
+    This surface used to explain itself when it BLOCKED a run and go silent
+    when it cleared one — and green is where the dangerous misread lives.
+    `ready_to_run` answers "is every credential registered", readers are told to
+    trust it first, and it is blind to revocation, expiry and quota: in a
+    client-funded model, the ordinary ways a key stops working. Demonstrated,
+    not theorised — the operator's deleted key still read healthy on 2026-08-27.
+
+    The earlier version of this test asserted `"note" not in status`. That
+    assertion WAS the defect, written down.
+    """
+    _register(vault, "openai-api")
+    _register(vault, "deepseek-api")
+    note = _status()["note"]
+    # It must say a run will start...
+    assert "will start" in note
+    # ...and, in the same breath, that this is not a liveness check.
+    assert "NOT a liveness check" in note
+    assert "revoked" in note
+    # And it must tell the reader whose word beats this field.
+    assert "believe them over this field" in note
+
+
+def test_the_green_note_dates_the_registration_it_rests_on(
+    two_credentials: None, vault: InMemoryCredentialStore
+) -> None:
+    """A stamp is only meaningful next to the moment it was taken.
+
+    Without the date, "registered" reads as timeless and a key connected months
+    ago looks exactly as fresh as one connected a minute ago.
+    """
+    _register(vault, "openai-api")
+    _register(vault, "deepseek-api")
+    status = _status()
+    oldest = min(
+        e["last_rotated_at"] for e in status["credentials"] if e.get("last_rotated_at")
+    )
+    assert f"Oldest registration: {oldest}." in status["note"]
 
 
 def test_another_clients_key_does_not_make_this_client_ready(

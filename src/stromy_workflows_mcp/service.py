@@ -1010,9 +1010,45 @@ def credential_status(
                 f"registered. Still outstanding: {', '.join(outstanding)}. "
                 "Mint a registration link per outstanding credential."
             )
-        elif drift:
+        else:
+            # THE GREEN CASE NEEDS A NOTE MORE THAN THE RED ONE DOES (ORG-237).
+            #
+            # Until 2026-08-30 this surface explained itself when it blocked a
+            # run and went silent when it cleared one — and green is precisely
+            # where the dangerous misread lives. `ready_to_run` answers "is
+            # every required credential registered", which is what the store
+            # can know. Readers are told to trust it first, so the field
+            # designated authoritative is the one blind to revocation, expiry
+            # and quota exhaustion. In a CLIENT-funded model those are not edge
+            # cases; they are the ordinary way a key stops working, and it was
+            # demonstrated rather than theorised: the operator deleted their
+            # registered OpenAI key on 2026-08-27 and this plane went on
+            # reporting it healthy.
+            #
+            # NOT fixed with a live probe. A provider round-trip on every
+            # status read bills the client to answer a question that is stale
+            # again by the time the run starts, and `runtime/preflight.py`
+            # already argues the general case: a check that converts a provider
+            # blip into an outage is worse than the failure it prevents. The
+            # honest fix is for the confident boolean to say what it rests on.
+            oldest = min(
+                (e["last_rotated_at"] for e in entries if e.get("last_rotated_at")),
+                default=None,
+            )
+            payload["note"] = (
+                "Every required credential is registered, so a run will start. "
+                "Registration is NOT a liveness check: a key that has been "
+                "revoked, has expired, or is out of quota at the provider still "
+                "reads registered here, and the run will fail with a provider "
+                "auth error. If someone tells you they rotated or deleted a key, "
+                "believe them over this field and re-register it."
+                + (f" Oldest registration: {oldest}." if oldest else "")
+            )
+        if drift and not outstanding:
             # Ready would be a lie: a contract naming an id this catalogue lacks
             # is a credential nobody can register, so the run cannot be funded.
+            # Only spoken when nothing else is owed — an outstanding list is the
+            # actionable message and drift would bury it.
             payload["note"] = (
                 "Every registerable credential is connected, but this workflow "
                 f"names {', '.join(drift)}, which this server's catalogue does "
