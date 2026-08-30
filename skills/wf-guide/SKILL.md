@@ -1,6 +1,6 @@
 ---
 name: wf-guide
-description: Explain and route the Stromy hosted workflow service: what runs remotely, which workflow skill to use, how configuration review works, why the workspace connector is required, and how paused or long-running jobs return results. Use whenever a client asks how hosted analyses work, what the Stromy Workflows connector does, or which wf-* skill to choose.
+description: "Explain and route the Stromy hosted workflow service: what runs remotely, which workflow skill to use, how configuration review works, why the workspace connector is required, and how paused or long-running jobs return results. Use whenever a client asks how hosted analyses work, what the Stromy Workflows connector does, or which wf-* skill to choose."
 ---
 
 # Stromy Workflows guide
