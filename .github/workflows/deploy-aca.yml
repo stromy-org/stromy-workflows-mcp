@@ -120,8 +120,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          secrets: |
-            internal_libs_pat=${{ steps.app-token.outputs.token }}
+          # Emitted only when there IS a token. With the mint step skipped the
+          # output is empty, and `internal_libs_pat=` on its own made buildx
+          # warn "is not a valid secret" on every deploy — the same permanent-
+          # noise problem as the red mint annotation, one line further down.
+          # Removing the error but leaving the warning would have left the
+          # signal just as untrustworthy.
+          secrets: ${{ steps.preflight.outputs.app_creds == 'true' && format('internal_libs_pat={0}', steps.app-token.outputs.token) || '' }}
 
       - name: Azure login (OIDC)
         if: steps.preflight.outputs.oidc_ready == 'true'
