@@ -216,6 +216,13 @@ async def get_credential_status(
     not "no" — the credential store could not be read. Never report ``null`` as
     "you still have keys to connect".
 
+    **``true`` means "a run will start", not "a run will succeed."** It is a
+    registration check, so it cannot see a key that has been revoked, has
+    expired, or is out of quota — which in a client-funded model is the ordinary
+    way a key stops working, not an edge case. Read the ``note`` that comes with
+    a ``true`` verdict and pass its caveat on rather than reporting a bare
+    green.
+
     ``credential_policy`` explains the whole shape: on ``operator`` the client's
     runs spend Stromy's keys, nothing is owed, and ``ready_to_run`` is always
     true. Only on ``client`` does an unregistered credential mean an action.
