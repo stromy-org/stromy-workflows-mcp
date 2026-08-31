@@ -80,13 +80,28 @@ their plugin, so picking the skill under `your-brand` is what selects
 
 If you want to *change* the setup itself — a new logo, a colour tweak, updated
 boilerplate — that's a separate skill, `asset-editor` (covered in the asset
-guide), not something you do by restyling each document.
+guide), not something you do by restyling each document. It is the **reviewed
+channel for your own structured context**: you describe the change in chat, see
+a truthful preview of what it would actually do, and it opens a proposal that a
+person signs off before anything is live. Restyling each document instead leaves
+the underlying setup wrong, so the next document is wrong again.
 
 ## The shape of every job
 
 Whatever you ask lands on one of the two family paths — or chains them — and
 every job closes the same way. Keeping this picture in mind tells you what
-happens next at any point:
+happens next at any point.
+
+**Producing something starts with a conversation, not a format.**
+`format-prepare-document` is that conversation: before anything is rendered, it
+works out with you what the piece is for, who reads it, what it has to say and
+in what order. The format — deck, PDF, document, video — is chosen at the end,
+from the content, which is why the same prepared material can come out as more
+than one thing.
+
+**One job can chain several steps.** A single request may run research first,
+turn findings into diagrams or charts, and only then render the final artefact.
+You ask once, in plain language; the chaining is Claude's job, not yours.
 
 ```mermaid
 ---
@@ -122,7 +137,10 @@ flowchart LR
   anything it had to improvise or couldn't find) — this happens on its own; then,
   optionally, it invites **your** feedback on the result itself. Take that
   offer when you have a view — it's how the tools and your setup get sharper.
-  It takes seconds.
+  It takes seconds. This is the **continuous-improvement channel**: the two modes
+  answer different questions — the retrospective is how the run went, yours is
+  whether the result was any good — and neither substitutes for the other, which
+  is why the order never reverses.
 
 <!-- enablement-core:end -->
 
