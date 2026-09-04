@@ -107,6 +107,24 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-postgresql-auth"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/ab/317881a1a168bdb87dd69233fd7a4aad162ee20c48f4989cf6d82a768990/azure_postgresql_auth-1.1.0.tar.gz", hash = "sha256:4f66742b9a7a40a8e586558311cbc77f5d7b83e9ac37828ed360f6b664054cca", size = 24804, upload-time = "2026-09-01T20:06:34.905Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/79/268b9affeae62be6db1e9f79a4521245a8ab0dfdd6f4b526e1fc847ae498/azure_postgresql_auth-1.1.0-py3-none-any.whl", hash = "sha256:f05d9ec601bb74b46f23468a65d1817a69b5a208d41ef1d022200137a5ed7ce4", size = 19327, upload-time = "2026-09-01T20:06:36.13Z" },
+]
+
+[package.optional-dependencies]
+psycopg3 = [
+    { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg-pool" },
+]
+
+[[package]]
 name = "azure-storage-blob"
 version = "12.30.0"
 source = { registry = "https://pypi.org/simple" }
@@ -905,6 +923,18 @@ wheels = [
 ]
 
 [[package]]
+name = "psycopg-pool"
+version = "3.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/90/82/7a23d26039827ecd4ebe93905651029ddd307c5182ad59296dfb6f67b528/psycopg_pool-3.3.1.tar.gz", hash = "sha256:b10b10b7a175d5cc1592147dc5b7eec8a9e0834eb3ed2c4a92c858e2f51eb63c", size = 31661, upload-time = "2026-05-01T23:31:59.809Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/ed/89c2c620af0e1660354cd8aabf9f5b21f911597ce22acb37c805d6c86bc8/psycopg_pool-3.3.1-py3-none-any.whl", hash = "sha256:2af5b432941c4c9ad5c87b3fa410aec910ec8f7c122855897983a06c45f2e4b5", size = 40023, upload-time = "2026-05-01T23:31:53.136Z" },
+]
+
+[[package]]
 name = "py-key-value-aio"
 version = "0.4.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1414,7 +1444,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "stromy-asset-transport" },
     { name = "stromy-byok", extra = ["azure"] },
-    { name = "workflow-runtime-core" },
+    { name = "workflow-runtime-core", extra = ["azure-postgres"] },
 ]
 
 [package.dev-dependencies]
@@ -1438,7 +1468,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "stromy-asset-transport", git = "https://github.com/stromy-org/asset-transport.git?tag=v0.6.0" },
     { name = "stromy-byok", extras = ["azure"], git = "https://github.com/stromy-org/stromy-byok.git?tag=v0.2.1" },
-    { name = "workflow-runtime-core", git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.7.2" },
+    { name = "workflow-runtime-core", extras = ["azure-postgres"], git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.8.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1661,11 +1691,17 @@ wheels = [
 
 [[package]]
 name = "workflow-runtime-core"
-version = "0.7.2"
-source = { git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.7.2#c7f7047341f1362d18316a5193a73fc5b6fd2c84" }
+version = "0.8.0"
+source = { git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.8.0#4509dbbd14054a433813bf23594560836032a31f" }
 dependencies = [
     { name = "click" },
     { name = "psycopg", extra = ["binary"] },
+]
+
+[package.optional-dependencies]
+azure-postgres = [
+    { name = "azure-identity" },
+    { name = "azure-postgresql-auth", extra = ["psycopg3"] },
 ]
 
 [[package]]
