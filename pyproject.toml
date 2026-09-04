@@ -28,10 +28,16 @@ dependencies = [
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
     "psycopg[binary]>=3.3.4,<4",
-    # The shared run-registry lifecycle (ORG-PLAN-155). BASE install only —
-    # no `executor`/`rabbitmq` extras, so the facade acquires neither
-    # LangGraph nor aio-pika. The dependency-audit step asserts that.
-    "workflow-runtime-core",
+    # The shared run-registry lifecycle (ORG-PLAN-155). Still no
+    # `executor`/`rabbitmq` extras, so the facade acquires neither LangGraph nor
+    # aio-pika — the dependency-audit step asserts that, and `azure-postgres`
+    # does not weaken it: it pulls azure-identity and the psycopg 3 Entra
+    # connection classes, nothing graph- or broker-shaped.
+    #
+    # The extra is what lets this app authenticate to PostgreSQL as its own
+    # managed identity instead of holding the local administrator's password
+    # (ORG-PLAN-226). It is inert until WRC_PG_AUTH=entra.
+    "workflow-runtime-core[azure-postgres]",
     "pydantic-settings>=2.0.0",
     # Fresh short-lived download URLs for published run artifacts. The account is
     # passed explicitly from WORKFLOW_STORAGE_ACCOUNT (>=0.6.0), so the facade
@@ -91,7 +97,7 @@ select = ["E", "F", "I", "UP", "ASYNC", "B", "PERF", "S"]
 # Public repo: this repo is public too, and a public caller cannot read a
 # private one — an exact PUBLIC tag is what removes the build-credential
 # problem entirely (ORG-PLAN-155 locked decision 3).
-workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-core.git", tag = "v0.7.2" }
+workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-core.git", tag = "v0.8.0" }
 # Result retrieval mints a read URL per authorized call; the account and container
 # are passed EXPLICITLY (>=0.6.0), because this library's own ASSET_STORE_ACCOUNT
 # names the brand-asset account rather than the workflow one.

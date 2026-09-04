@@ -26,9 +26,12 @@ ran refuses to start rather than reading a shape it does not have.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 
+from workflow_runtime_core.auth import resolve_application_role, resolve_owner_role
+from workflow_runtime_core.grants import GrantManifest, reconcile
 from workflow_runtime_core.migrations import Migration, apply_app_migrations, read_app_version
 from workflow_runtime_core.registry import DbConnection
 
@@ -96,10 +99,32 @@ MIGRATIONS: tuple[Migration, ...] = (
 
 LATEST_VERSION = MIGRATIONS[-1].version
 
+#: What the application role may do to THIS chain's objects (ORG-PLAN-226).
+#:
+#: Only this chain can classify its own tables, which is why the manifest lives
+#: here rather than in the estate's SQL: `input_sessions` and `input_files` hold
+#: operational rows the facade creates and mutates, and nothing here is a
+#: migration ledger — this chain's version is recorded in the shared governed
+#: `schema_migrations`, which the core chain already protects.
+#:
+#: No blanket grant, deliberately. A table a future migration adds is absent
+#: from this tuple and therefore INACCESSIBLE to the application until someone
+#: classifies it — loud, and in a test, rather than silently swept in.
+GRANTS = GrantManifest(
+    name=NAMESPACE,
+    operational_tables=("input_sessions", "input_files"),
+)
 
-def apply(conn: DbConnection) -> int:
-    """Apply this application's chain. Idempotent; returns the version reached."""
-    return apply_app_migrations(conn, NAMESPACE, MIGRATIONS)
+
+def apply(conn: DbConnection, *, owner_role: str | None = None) -> int:
+    """Apply this application's chain. Idempotent; returns the version reached.
+
+    ``owner_role`` elevates before anything is read, so the tables end up owned
+    by that role rather than by whichever login ran the migration — and so a
+    principal holding only DML fails loudly instead of finding the chain already
+    current and exiting 0.
+    """
+    return apply_app_migrations(conn, NAMESPACE, MIGRATIONS, owner_role=owner_role)
 
 
 def live_version(conn: DbConnection) -> int | None:
@@ -127,14 +152,51 @@ def require_applied(conn: DbConnection) -> int:
     return version
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m stromy_workflows_mcp.migrations",
+        description="Apply this service's upload-session migration chain.",
+    )
+    # The same generic contract `wrc migrate` carries, and generic for the same
+    # reason: this repo must not encode the estate's role names any more than
+    # the shared library does. Both default to their environment variables, and
+    # both being unset means "this deployment does not separate ownership" —
+    # which is what every deployment did before ORG-PLAN-226.
+    parser.add_argument(
+        "--owner-role",
+        default=None,
+        help="Role to SET ROLE before migrating (defaults to $WRC_PG_OWNER_ROLE).",
+    )
+    parser.add_argument(
+        "--application-role",
+        default=None,
+        help=(
+            "Role to reconcile this chain's grants for after migrating "
+            "(defaults to $WRC_PG_APPLICATION_ROLE)."
+        ),
+    )
+    args = parser.parse_args(argv)
+
     logging.basicConfig(level="INFO", format="%(levelname)s %(name)s: %(message)s")
     if not settings.stromy_pg_dsn:
         logger.error("STROMY_PG_DSN is unset; nothing to migrate")
         return 2
+
+    owner = resolve_owner_role(args.owner_role)
+    application = resolve_application_role(args.application_role)
+
     with connect() as conn:
-        reached = apply(conn)
+        reached = apply(conn, owner_role=owner)
+        granted: list[str] = []
+        if application:
+            # Same connection and same elevation as the migration: the grants
+            # must be made by the owner, and a second connection would have lost
+            # the SET LOCAL ROLE.
+            granted = reconcile(conn, GRANTS, application_role=application)
+
     logger.info("%s chain applied through v%d", NAMESPACE, reached)
+    if granted:
+        logger.info("reconciled %d grant(s) for %s", len(granted), application)
     return 0
 
 
