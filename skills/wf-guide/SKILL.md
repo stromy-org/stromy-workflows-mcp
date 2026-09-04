@@ -141,6 +141,13 @@ flowchart LR
   answer different questions — the retrospective is how the run went, yours is
   whether the result was any good — and neither substitutes for the other, which
   is why the order never reverses.
+  **Precondition: this needs the Asset Broker connector switched on in your
+  workspace.** `asset-feedback` writes through it, and your plugin cannot supply
+  that connection on its own. Without it the skill has nowhere to file what it
+  captures, so the retrospective — the only record of how a run actually went —
+  is silently lost. If you have not enabled Asset Broker yet, do that first;
+  Claude will tell you when the channel is unavailable rather than pretending
+  the feedback landed.
 
 <!-- enablement-core:end -->
 
