@@ -1,6 +1,7 @@
 ---
 name: wf-stakeholder-analysis
 description: "Run a hosted stakeholder-acceptance analysis from a client plugin: gather the decision and evidence settings, validate the safe workflow configuration, start the asynchronous run, handle questionnaire review, and return its report links. Use whenever a client asks for stakeholder mapping, acceptance analysis, resistance analysis, coalition analysis, or a stakeholder report, even if they do not mention workflows."
+client_summary: "Map who supports or resists a decision, and what would move them."
 ---
 <!--
   GENERATED FILE — DO NOT EDIT.
@@ -30,6 +31,8 @@ Then stop and wait. Never fall back to a local or identically-named base skill, 
 
 1. Read the main skill instructions:
    → call the `fs_read` tool on the `stromy-workflows` MCP with `path="skills/wf-stakeholder-analysis/SKILL.md"`.
+
+   **Read it to the end.** `fs_read` returns one page at a time. If the result's `next_offset_chars` is not null — or the returned text ends in a `<<< PARTIAL READ … >>>` block — the body is incomplete: call `fs_read` again with `offset_chars` set to that value and concatenate, repeating until it comes back null. Do **not** start work on a partial skill body. Hard rules and anti-patterns often sit in the final third, and a partial read fails silently — it looks like a complete skill.
 
 2. Discover reference files (and any other skill assets), then read on demand:
    → call `fs_list` with `path="skills/wf-stakeholder-analysis"` (and `path="skills/wf-stakeholder-analysis/references"`),
