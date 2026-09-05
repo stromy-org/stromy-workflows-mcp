@@ -1,0 +1,131 @@
+name: Deployed endpoint smoke
+
+# The COMPOSITION canary (org doctrine:
+# infra-docs/ai/published-artifact-contracts.md). Unit CI proves the parts;
+# nothing else observes the composed product — the deployed container
+# answering real MCP calls. Cross-repo changes (a published artifact, config,
+# an upstream contract) compose ONLY at the deployed surface — the au-gov-data
+# 2026-08-24→26 outage sat exactly there for two days with every per-repo
+# check green — so that surface gets its own daily probe.
+#
+# SETUP (once, after the first successful deploy): set the repo variable
+#   MCP_URL = https://<app-fqdn>/mcp
+# Until it is set, the run skips with a warning — a scaffold that has never
+# deployed must not alarm, but an unset MCP_URL on a LIVE server means this
+# canary is not watching it.
+
+on:
+  schedule:
+    - cron: "43 5 * * *" # daily, 05:43 UTC — stagger vs the fleet if you care
+  workflow_run:
+    workflows: ["Deploy to Azure Container Apps"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deployed-smoke:
+    # After a deploy, only smoke a deploy that actually succeeded — a failed
+    # deploy has its own red run and did not change what is serving.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Pre-flight — MCP_URL configured?
+        id: preflight
+        run: |
+          if [ -z "${{ vars.MCP_URL }}" ]; then
+            echo "::warning::MCP_URL repo variable is not set — the deployed-endpoint canary is NOT watching production. Set it to https://<app-fqdn>/mcp after the first deploy."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.preflight.outputs.configured == 'true'
+
+      - name: Install uv
+        if: steps.preflight.outputs.configured == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync deps
+        if: steps.preflight.outputs.configured == 'true'
+        # No `|| uv sync` fallback: that silently relocks, so a lockfile that
+        # has drifted from pyproject.toml can never fail the build.
+        run: uv sync --frozen
+
+      - name: Run deployed-endpoint smoke tests
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          MCP_URL: ${{ vars.MCP_URL }}
+        run: uv run pytest -m deployed -q
+
+      - name: Report failure on the tracking issue
+        # Dedup-with-re-arm (ORG-196): one open issue per streak, every
+        # recurrence recorded as a comment, auto-closed by the next green run
+        # so the alarm is never left muted.
+        if: failure()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'live-deployed',
+            });
+            if (existing.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: `Deployed smoke failed: ${new Date().toISOString().slice(0, 10)}`,
+                labels: ['live-deployed'],
+                body: [
+                  'The daily deployed-endpoint smoke failed — the PRODUCTION MCP is',
+                  'serving a broken or degraded composition (service × config ×',
+                  'published artifacts × upstreams). This is user-facing by',
+                  'construction.',
+                  '',
+                  `Run: ${runUrl}`,
+                  '',
+                  'Typical causes: a cross-repo change whose effect only exists at',
+                  'the deployed surface, an upstream contract change, or a deploy',
+                  'regression (see infra-docs/ai/published-artifact-contracts.md).',
+                  '',
+                  'This issue auto-closes on the next green run. Recurrences are',
+                  'added as comments below, so the comment count is the streak.',
+                ].join('\n'),
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `Still failing as of ${stamp} UTC — ${runUrl}`,
+              });
+            }
+
+      - name: Close the tracking issue on recovery
+        if: success() && steps.preflight.outputs.configured == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'live-deployed',
+            });
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Deployed smoke passed — ${runUrl}. Closing; the alarm is armed again.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed',
+              });
+            }
