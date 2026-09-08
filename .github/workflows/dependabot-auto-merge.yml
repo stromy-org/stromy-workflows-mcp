@@ -2,10 +2,19 @@ name: dependabot-auto-merge
 
 # Auto-merges low-risk Dependabot PRs once required CI checks pass:
 #   * any patch bump, and
-#   * minor bumps that are NOT a direct production dependency (dev tooling and
-#     transitive pins) — those cannot change this package's runtime behaviour.
-# Minor bumps of direct production deps, and every major, stay for human review.
+#   * any minor bump — direct production dependency or not.
+# Every major bump stays for human review, regardless of dependency type.
 # Security-grouped PRs of any severity also wait for review (Dependabot marks them).
+#
+# Widened 2026-08-28 (approved policy: dependabot-lowrisk-automerge). The prior
+# `dependency-type != direct:production` carve-out on minor bumps is now
+# inconsistent with the org's approved policy, which is keyed on PROVENANCE
+# (dependabot[bot] authorship) + update type (patch/minor, never major) — never
+# on which dependency class a minor bump happens to touch. This applies even on
+# `deploy_on_main: true` repos, where merging fires a production deploy — that
+# is the approved intent, not an oversight. See the "GATE 6 EXCEPTION" section
+# of stromy-org/scripts/merge-ready-prs.py's module docstring (the fallback
+# merger this native path is now aligned with) for the full rationale.
 #
 # REQUIRES `allow_auto_merge: true` ON THE REPO. That setting defaults to FALSE on
 # every newly created GitHub repo, and `gh pr merge --auto` is a SILENT no-op without

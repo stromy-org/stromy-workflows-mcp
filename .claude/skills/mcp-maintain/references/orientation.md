@@ -122,6 +122,65 @@ async def test_my_tool(client):
 
 Run with: `uv run pytest`
 
+**For any tool that returns a list, table, or long text, this in-memory client
+call is also where you assert the size contract** — see §4a. A test that stops at
+`len(json.dumps(envelope))` measures a string the client never receives.
+
+---
+
+## 4a. Response budgeting (ORG-PLAN-221)
+
+**The budget is the complete MCP-visible text, and the server owns it.** A row
+cap says how many rows the caller wanted; it says nothing about how wide they
+are, nor about the enclosing list, envelope, warnings, metadata, or FastMCP's own
+serialization. On 2026-08-25 a tool returned exactly its documented
+`max_results=200` and a claude.ai surface rejected the 70,681-character result;
+the truncation warning said "or raise max_results", the model did, and the retry
+was 179 KB.
+
+`src/stromy_workflows_mcp/response_budget.py` ships with this scaffold:
+
+```python
+from stromy_workflows_mcp.response_budget import fit_json_result
+
+def build_payload(prefix, budget_meta, warning):
+    """Called repeatedly by the fitter — keep it pure, and put EVERYTHING the
+    client pays for inside it (fixed metadata, pre-existing warnings, coverage)."""
+    return {
+        "results": list(prefix),
+        "returned_count": len(prefix),
+        "warnings": [warning] if warning else [],
+        "metadata": {"coverage": {...}, "response_budget": budget_meta},
+    }
+
+fitted = fit_json_result(
+    matched,
+    build_payload=build_payload,
+    narrowing_hint="Filter by state or period, or page with metadata.coverage.next_offset.",
+)
+return fitted.payload
+```
+
+Defaults: **40,000 content characters**, hard ceiling 60,000 for a named
+`response_format="complete"` mode. Never expose the budget as a caller parameter.
+
+Four things that are easy to get wrong:
+
+- **Wide cross-tabs need an encoding change, not just a cap.** Repeating a
+  `{code, label}` pair per dimension per row cost 49,847 tokens for a cube that
+  encodes to 7,657 as rows-as-tuples + a legend + hoisted constants. Hoisting
+  constants alone only reaches ~54% — measured, and not sufficient.
+- **Default to the aggregate the question needs.** A totals margin answers the
+  real question in ~490 tokens; full detail stays behind an explicit parameter.
+- **Truncation names the NARROWING move.** `assert_narrowing_grammar` rejects
+  "raise the cap"/"raise max_results" phrasing at authoring time.
+- **Binary and bulk output goes by reference** (sha256 handle, confined local
+  path, or expiring URL), never inline because the decoded bytes looked small —
+  base64 inflates ~4/3 before the envelope is added.
+
+Full standard, calibration matrix and the `table/v1` schema:
+`infra-docs/ai/mcp-response-budgeting.md` in stromy-org.
+
 ---
 
 ## 5. Logging & observability
