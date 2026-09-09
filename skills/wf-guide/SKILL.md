@@ -128,9 +128,9 @@ flowchart LR
   and an unverifiable claim is flagged as such — never papered over. If a data
   source is down, you'll be told, so silence from a source is never read as
   "there's nothing there".
-- **Finished work lands in your SharePoint workspace**, organised by client and
-  project where that's set up — Claude gives you the link. No
-  download-and-reupload.
+- **Finished work lands in your SharePoint workspace**, in the folder tree your
+  workspace is set up with (by project, or by client and project) — Claude
+  gives you the link. No download-and-reupload.
 - **Every flow ends with feedback.** Once something's delivered, the
   `asset-feedback` skill runs. It has **two modes, in order**: first, an automatic
   **retrospective** where Claude records how the run actually went (including
