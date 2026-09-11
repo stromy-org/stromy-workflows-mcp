@@ -15,9 +15,23 @@
           "x-pinned": "src/content/blog",
           "x-tier": 3
         },
+        "mode": {
+          "enum": [
+            "preview",
+            "publish"
+          ],
+          "type": "string",
+          "x-pinned": "preview",
+          "x-tier": 3
+        },
         "repo": {
           "type": "string",
           "x-pinned": "stromy-org/stromy-website",
+          "x-tier": 3
+        },
+        "supersede_previous": {
+          "type": "boolean",
+          "x-pinned": false,
           "x-tier": 3
         }
       },

@@ -43,9 +43,25 @@
       "x-pinned": "direct",
       "x-tier": 3
     },
+    "engagement_mode": {
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
     "input_set": {
       "description": "Optional finalized input-set handle (inputset:<uuid>) from create_input_session/finalize_input_session. The runner rehydrates the uploaded documents into the run's raw-inputs folder, where document loading picks them up alongside anything orchestrated sourcing gathers. Tier 2, with no default: absent simply means no client-supplied documents.",
       "pattern": "^inputset:[0-9a-f-]+$",
+      "type": "string",
+      "x-tier": 2
+    },
+    "probability_transform": {
+      "default": "linear",
+      "description": "How a stakeholder's aggregated driver score becomes a probability. `linear` (the default) carries the scoring rubric's own anchors through \u2014 its 1 = ~5% / 10 = ~95% ladder \u2014 so the transform does not re-decide the calibration. `logistic` is the legacy second calibration on top of that: it agrees near the middle and compresses the tails (10 -> 0.88), and exists only to reproduce a pre-2026-09 run. `identity` is the raw 0-100% map with no band. Tier 2: a visible default a client may change.",
+      "enum": [
+        "linear",
+        "logistic",
+        "identity"
+      ],
       "type": "string",
       "x-tier": 2
     },
@@ -75,6 +91,17 @@
       "x-pinned": true,
       "x-tier": 3
     },
+    "run_cluster_identification": {
+      "description": "Discover and consolidate the stakeholder set from evidence. Provider-locked ON: the only alternative source of stakeholders is workflow.inputs.realities_path, which is not part of the hosted surface, so a hosted run with this off has nothing to analyse and initialize_workflow rejects it.",
+      "type": "boolean",
+      "x-pinned": true,
+      "x-tier": 3
+    },
+    "run_collector": {
+      "description": "Extract evidence excerpts and map each to a stakeholder and driver \u2014 the ledger every score must cite. Tier 2.",
+      "type": "boolean",
+      "x-tier": 2
+    },
     "run_deep_research": {
       "type": "boolean",
       "x-pinned": true,
@@ -90,17 +117,23 @@
       "x-pinned": true,
       "x-tier": 3
     },
+    "run_driver_discovery": {
+      "description": "EXPERIMENTAL, provider-locked off. Discovers additional drivers from the corpus, which makes the analytical frame vary per run and forfeits run-to-run comparability \u2014 the property this workflow exists to provide.",
+      "type": "boolean",
+      "x-pinned": false,
+      "x-tier": 3
+    },
+    "run_graph_enrichment": {
+      "description": "Relationship extraction and entity/cluster alignment \u2014 two halves of one optional feature whose only effect on the answer is the context notes handed to scoring. Off by default. Tier 2.",
+      "type": "boolean",
+      "x-tier": 2
+    },
     "run_orchestrated_sourcing": {
       "type": "boolean",
       "x-pinned": true,
       "x-tier": 3
     },
     "run_probability_estimator": {
-      "type": "boolean",
-      "x-pinned": true,
-      "x-tier": 3
-    },
-    "run_questionnaire_generator": {
       "type": "boolean",
       "x-pinned": true,
       "x-tier": 3
@@ -125,15 +158,22 @@
       "x-pinned": true,
       "x-tier": 3
     },
-    "run_review_questionnaire": {
-      "type": "boolean",
-      "x-pinned": true,
-      "x-tier": 3
-    },
     "run_scoring": {
       "type": "boolean",
       "x-pinned": true,
       "x-tier": 3
+    },
+    "weighting_mode": {
+      "default": "category_balanced",
+      "description": "How driver weights are set within a stakeholder. `category_balanced` (the default) gives each driver CATEGORY equal total weight, split among its members, so the taxonomy cannot vote: under plain `equal`, a category the registry happens to express as seven drivers outweighs one expressed as two, and adding a driver for descriptive reasons moves the conclusion. `configured` requires explicit driver_weights and triggers the HITL review; `llm_ranked` derives them from a ranker. Tier 2: a visible default a client may change.",
+      "enum": [
+        "category_balanced",
+        "equal",
+        "configured",
+        "llm_ranked"
+      ],
+      "type": "string",
+      "x-tier": 2
     }
   },
   "workflow": "stakeholder_analysis_workflow",
