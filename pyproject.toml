@@ -101,7 +101,7 @@ workflow-runtime-core = { git = "https://github.com/stromy-org/workflow-runtime-
 # Result retrieval mints a read URL per authorized call; the account and container
 # are passed EXPLICITLY (>=0.6.0), because this library's own ASSET_STORE_ACCOUNT
 # names the brand-asset account rather than the workflow one.
-stromy-asset-transport = { git = "https://github.com/stromy-org/asset-transport.git", tag = "v0.6.0" }
+stromy-asset-transport = { git = "https://github.com/stromy-org/asset-transport.git", tag = "v0.7.0" }
 # Published public (2026-08-16) for exactly the reason above: this consumer is
 # public, and a public caller cannot read a private repo. The library is
 # client-neutral by construction — it hardcodes no client, vault URI, provider
