@@ -204,6 +204,14 @@
         "tier": "smart"
       }
     ],
+    "optional_credentials": [
+      "core-api",
+      "jina-api",
+      "mediacloud-api",
+      "serper-api",
+      "tavily-api",
+      "world-news-api"
+    ],
     "resolved_credentials": [
       "deepseek-api",
       "openai-api"

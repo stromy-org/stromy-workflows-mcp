@@ -1,7 +1,7 @@
 {
   "version": 2,
   "_notes": "Authored here, unlike contracts/ which are generated from Stromy. Join table: workflow -> entitled client slugs -> the client-facing wf-* skill. Default-deny: a workflow absent from this file, or present with an empty clients object, is operator-only. Every slug must match an Entra app role in terraform/entra.tf (local.workflow_app_roles) -- adding a slug here does not grant the role. scripts/check_entitlements.py fails CI when a contract has no entry here.",
-  "_v2_notes": "v2 (ORG-PLAN-206 C4) turns 'clients' from a LIST of slugs into an OBJECT keyed by slug, so each grant can carry commercial facts alongside the grant itself. Today that is credential_policy: 'operator' (Stromy's provider keys, Stromy carries the spend) or 'client' (the run resolves the client's own registered credentials, ambient operator keys scrubbed first). Every entry migrates to 'operator', so v2 changes no client's billing on its own -- flipping one to 'client' is a deliberate, per-pair commercial act. The parser still accepts the v1 list form and reads it as every slug on the default policy: registry and code deploy independently, and a v1 file meeting a v2-only parser would fail closed and deny every client at once.",
+  "_v2_notes": "v2 (ORG-PLAN-206 C4) turns 'clients' from a LIST of slugs into an OBJECT keyed by slug, so each grant can carry commercial facts alongside the grant itself. ORG-PLAN-300 then made the billing fact PER CREDENTIAL: 'funding' maps a credential id to 'client' (the run resolves that client's own registered key, ambient operator copies scrubbed first) or 'operator' (Stromy's key, Stromy carries the spend). The scalar 'credential_policy' is still accepted and means 'every declared credential on this policy'; declaring BOTH for one slug is refused, because two statements of one answer can disagree. A credential named in NEITHER defaults to 'operator' and is reported as defaulted rather than decided -- lending our key is the right starting state for a new workflow, but a funding answer nobody chose must stay distinguishable from one somebody did. The v1 list form still parses as every slug on the default: registry and code deploy independently, and a file a newer parser refuses would deny every client at once.",
   "workflows": {
     "stakeholder_analysis_workflow": {
       "clients": {
@@ -9,11 +9,20 @@
           "credential_policy": "operator"
         },
         "stromy": {
-          "credential_policy": "client"
+          "funding": {
+            "openai-api": "client",
+            "deepseek-api": "client",
+            "serper-api": "operator",
+            "tavily-api": "operator",
+            "core-api": "operator",
+            "mediacloud-api": "operator",
+            "world-news-api": "operator",
+            "jina-api": "operator"
+          }
         }
       },
       "skill": "wf-stakeholder-analysis",
-      "note": "Duke Strategies pilot (ORG-PLAN-070). Stromy is the self-client full-fleet test surface -- the wf-* skills ship in stromy-plugin, so the slug must be entitled here (validate-plugin-completeness Invariant #19) and hold the client.stromy app role. stromy is on credential_policy 'client' since 2026-08-23 (ORG-PLAN-206 C6): it is the ONLY pair proving the BYOK path end to end, and proving it on the self-client is what keeps a live client out of the experiment -- flipping dukestrategies would have made every Duke run require a key Duke has not registered, failing them all closed at stage credentials. Duke's own flip stays a deliberate commercial act, taken with Duke, after their key is registered."
+      "note": "Duke Strategies pilot (ORG-PLAN-070). Stromy is the self-client full-fleet test surface -- the wf-* skills ship in stromy-plugin, so the slug must be entitled here (validate-plugin-completeness Invariant #19) and hold the client.stromy app role. stromy has been client-funded since 2026-08-23 (ORG-PLAN-206 C6) and moved to MIXED funding on 2026-09-15 (ORG-PLAN-300): the client pays for the model tokens their own run consumes, while Stromy absorbs the six flat-rate evidence-channel subscriptions that do not divide meaningfully per client. It is also the only pair spending both wallets in one run, which is what exercises the scrub carve-out in production. dukestrategies stays wholly operator-funded: flipping an external client is a commercial act taken with that client, after their key is registered -- doing it unilaterally would fail every Duke run closed at stage credentials."
     },
     "weekly_intel_workflow": {
       "clients": {},

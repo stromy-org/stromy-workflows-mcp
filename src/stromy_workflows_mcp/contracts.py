@@ -143,6 +143,11 @@ class CredentialRequirements:
     models: tuple[ModelRequirement, ...] = ()
     credentials: tuple[str, ...] = ()
     resolved_credentials: tuple[str, ...] = ()
+    #: Credentials whose absence DEGRADES the run rather than stopping it — an
+    #: evidence channel that makes the report thinner when it cannot run
+    #: (ORG-PLAN-300). They are funded, scrubbed and reported exactly like the
+    #: required ones; the only difference is what happens when nobody funds one.
+    optional_credentials: tuple[str, ...] = ()
     model_registry_digest: str | None = None
 
     @property
@@ -157,6 +162,16 @@ class CredentialRequirements:
         rebuilt at each call site.
         """
         return tuple(sorted(set(self.credentials) | set(self.resolved_credentials)))
+
+    @property
+    def all_declared(self) -> tuple[str, ...]:
+        """Every credential this contract names — required and optional alike.
+
+        The set a funding decision is resolved against and the scrub is computed
+        from. Optional changes what happens when a credential is missing, never
+        whether it belongs to the run.
+        """
+        return tuple(sorted(set(self.required) | set(self.optional_credentials)))
 
     def describe(self, role: CallerRole) -> dict[str, Any]:
         """What this caller may see of the workflow's credential requirements.
@@ -182,6 +197,12 @@ class CredentialRequirements:
             "declared": self.declared,
             "required_credentials": list(self.required),
         }
+        # Named for what it costs, not for what it is. "optional" invites
+        # "so I can ignore it"; the honest statement is that the run proceeds
+        # and the answer gets thinner, which is the decision a reader is
+        # actually making.
+        if self.optional_credentials:
+            payload["degrades_without"] = list(self.optional_credentials)
         if role is CallerRole.OPERATOR:
             # Each side appears only when it HAS members. The split is
             # information only when there is a split: an empty array named
@@ -247,9 +268,7 @@ def _parse_models(workflow: str, raw: Any) -> tuple[ModelRequirement, ...]:
         pin = entry.get("pin")
         if pin is not None and not isinstance(pin, str):
             raise ContractError(f"contract {workflow!r} model tier {tier!r} has a non-string 'pin'")
-        models.append(
-            ModelRequirement(tier=tier, capabilities=tuple(capabilities), pin=pin)
-        )
+        models.append(ModelRequirement(tier=tier, capabilities=tuple(capabilities), pin=pin))
     return tuple(models)
 
 
@@ -275,6 +294,9 @@ def _parse_requirements(workflow: str, raw: Any) -> CredentialRequirements:
         credentials=_credential_ids(workflow, "credentials", raw.get("credentials")),
         resolved_credentials=_credential_ids(
             workflow, "resolved_credentials", raw.get("resolved_credentials")
+        ),
+        optional_credentials=_credential_ids(
+            workflow, "optional_credentials", raw.get("optional_credentials")
         ),
         model_registry_digest=digest,
     )
@@ -351,8 +373,7 @@ class Contract:
             {
                 name: value
                 for name, value in _flatten(effective).items()
-                if value is not None
-                and (role is CallerRole.OPERATOR or name not in locked)
+                if value is not None and (role is CallerRole.OPERATOR or name not in locked)
             }
         )
 
@@ -367,11 +388,7 @@ class Contract:
         especially), then apply the same role filter ``validate_config`` uses
         for its echo. The result resubmits cleanly as a repeat-run seed.
         """
-        declared = {
-            name: value
-            for name, value in _flatten(stored).items()
-            if name in self.keys
-        }
+        declared = {name: value for name, value in _flatten(stored).items() if name in self.keys}
         return self.project(_unflatten(declared), role)
 
     def validate(self, config: dict[str, Any], role: CallerRole) -> dict[str, Any]:

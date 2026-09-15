@@ -73,37 +73,49 @@ def test_reports_each_declared_credential_and_the_billing_policy(
     assert status["client_slug"] == "stromy"
     assert status["declared"] is True
     assert status["store_provisioned"] is True
-    # `stromy` is the self-client and ships on `client` (ORG-PLAN-206 C6), which
-    # is what makes this the interesting direction to assert: on `client` an
-    # unregistered credential IS an outstanding action, and the tool's contract
-    # is that a reader must consult the policy before saying so. The operator
-    # reading — "not_registered means the client owes nothing" — is covered by
-    # test_operator_policy_reports_no_outstanding_action below.
+    # `stromy` is the self-client and ships MIXED (ORG-PLAN-300): it funds the
+    # model keys itself and Stromy funds the evidence-channel subscriptions.
+    # That makes this the interesting direction to assert, because both readings
+    # now appear in ONE payload — `openai-api` is the client's to register,
+    # while `apify-api` (named in no funding decision, so defaulted to operator)
+    # is not an action item at all.
     assert status["credential_policy"] == "client"
     assert [entry["credential_id"] for entry in status["credentials"]] == [
         "apify-api",
         "openai-api",
     ]
-    assert all(entry["status"] == "not_registered" for entry in status["credentials"])
+    by_id = {entry["credential_id"]: entry for entry in status["credentials"]}
+    assert by_id["openai-api"]["funded_by"] == "client"
+    assert by_id["openai-api"]["funding_decided"] is True
+    assert by_id["openai-api"]["status"] == "not_registered"
+    # Defaulted, and SAYING so. A default is an acceptable starting state only
+    # while it stays visible; an invisible one is the defect this plan removes.
+    assert by_id["apify-api"]["funded_by"] == "operator"
+    assert by_id["apify-api"]["funding_decided"] is False
+    assert by_id["apify-api"]["status"] == "not_required"
+    assert status["funding_defaults"] == ["apify-api"]
     assert all(entry["signup_url"] for entry in status["credentials"])
 
 
 def test_operator_policy_reports_no_outstanding_action(
     declared: None, vault: InMemoryCredentialStore
 ) -> None:
-    """The other half of the reading, on a slug that still ships `operator`.
+    """The other half of the reading, on a slug that ships wholly `operator`.
 
-    `not_registered` means opposite things under the two policies, and once the
-    self-client moved to `client` nothing else asserted the operator side against
-    the SHIPPED registry. Reading `dukestrategies` keeps both branches covered by
-    the real file rather than by a fixture that could drift away from it.
+    This used to report `not_registered` here as well — the same literal string
+    for "you owe us a key" and "you owe nothing", which put the burden on every
+    caller to read the policy first and get the inference right. ORG-PLAN-300
+    made the entry state it: an operator-funded credential reads `not_required`,
+    so the ambiguity that needed explaining is gone rather than documented.
+
+    Read against the SHIPPED registry rather than a fixture, so the operator
+    branch cannot drift away from the real file.
     """
     duke = CallerScope(frozenset({"dukestrategies"}))
     status = _status(duke, "dukestrategies")
     assert status["credential_policy"] == "operator"
-    # Same literal status as the client-policy case above — which is precisely
-    # why a caller must read the policy to know whether it is an action item.
-    assert all(entry["status"] == "not_registered" for entry in status["credentials"])
+    assert all(entry["status"] == "not_required" for entry in status["credentials"])
+    assert all(entry["funded_by"] == "operator" for entry in status["credentials"])
 
 
 def test_a_registered_key_reads_as_registered_without_returning_it(
@@ -155,7 +167,12 @@ def test_an_unprovisioned_store_reports_unavailable_not_unregistered(
     monkeypatch.setattr(credentials, "credential_store", lambda: NullCredentialStore())
     status = _status()
     assert status["store_provisioned"] is False
-    assert all(entry["status"] == "unavailable" for entry in status["credentials"])
+    by_id = {entry["credential_id"]: entry for entry in status["credentials"]}
+    # Only a client-funded credential is ever read from the store, so only it
+    # can be `unavailable`. An operator-funded one was never a question for the
+    # client, and an unreadable vault does not make it one.
+    assert by_id["openai-api"]["status"] == "unavailable"
+    assert by_id["apify-api"]["status"] == "not_required"
     assert "not the same as" in status["note"]
 
 
