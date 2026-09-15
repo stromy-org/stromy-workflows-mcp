@@ -24,7 +24,23 @@ dependencies = [
     # A server that resolves onto 3.4.3 cannot complete OAuth at all — it 403s
     # POST /register and POST /consent before the account picker appears, which
     # reads as an auth bug but is a transport one. Keep the floor above it.
-    "fastmcp>=3.4.4",
+    # CEILING <4 is load-bearing, and it is a CLIENT-COMPATIBILITY bound, not a
+    # taste one. fastmcp 4 hardcodes `authorization_response_iss_parameter_supported
+    # = True` (proxy.py:2527, no setting gates it) and appends an RFC 9207 `iss` to
+    # every client-facing authorization redirect. That is spec-correct, and it is
+    # also a BREAKING change for any MCP client whose loopback callback relay drops
+    # unknown query parameters: the client sees an `iss`-less response from a server
+    # that advertised `iss`, so the MCP SDK refuses the exchange BEFORE it sends the
+    # token request. The server logs a clean 302 and then nothing -- no error, no
+    # POST /token -- and the user sits in an endless re-login loop while Entra
+    # records every attempt as a SUCCESS. That locked a partner out of
+    # asset-broker-mcp for six days from 2026-09-09 (asset-broker-mcp#39); this
+    # server took the same bump the same night and served `iss` until now. Raise
+    # this ceiling only with `tests/test_oauth_login_contract.py` green on the new
+    # version AND stromy-org's `scripts/audit-mcp-login.py` green against the
+    # deployed revision -- `/health` and "the siblings are already on 4" are not
+    # evidence that a client can authenticate.
+    "fastmcp>=3.4.4,<4",
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
     "psycopg[binary]>=3.3.4,<4",
