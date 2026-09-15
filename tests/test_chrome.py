@@ -27,7 +27,12 @@ async def test_fs_read_skill(client):
         name="fs_read", arguments={"path": "skills/server-guide/SKILL.md"}
     )
     # fs_read returns a page object, not a bare string — the body is in
+<<<<<<< before updating
     # `content`, and `next_offset_chars` is the continuation handle.
+=======
+    # `content`, and `next_offset_chars` is the continuation handle. Budgeting
+    # rules live in `test_response_budget.py`; this asserts the shape only.
+>>>>>>> after updating
     assert result.data["content"]
     assert result.data["next_offset_chars"] is None
     assert result.data["truncated"] is False

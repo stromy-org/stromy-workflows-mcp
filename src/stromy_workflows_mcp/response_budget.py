@@ -29,6 +29,38 @@ resistance:
    `results: []` with `truncated: true` is indistinguishable from "nothing
    matched" to a caller that reads the list. `ResponseBudgetError` names the
    offending item and what to do instead.
+<<<<<<< before updating
+=======
+4. **Nothing touches the payload after the fit.** The fit is a fixed point:
+   `payload` and `serialized_text` describe identical bytes, and anything that
+   runs afterwards and changes either one breaks that silently. Two forms of
+   this shipped past a green suite during the 2026-08-26 rollout, because both
+   happen after `fit_json_result` returns and every test exercised the fit in
+   isolation:
+
+   - a wrapper delegated to a budgeted function and then appended its own
+     warnings and metadata to the result — the live server returned 2,392
+     characters while declaring 1,666;
+   - a tool returning `str` hand-serialized with `json.dumps`'s default
+     separators, ~6.5% wider than the compact ones measured, so a payload fitted
+     to 40,000 went out at ~42,600.
+
+   So a wrapper passes its extras **in** (an `extra_warnings` /
+   `extra_metadata` parameter), never **on**; and if a tool must return a
+   string, it serializes with `canonical_json`, never a bare `json.dumps`.
+   Assert `declared == len(canonical_json(result))` at the **outermost function
+   a client can call** — an in-isolation test cannot see either defect.
+5. **Truncation must not strand the dropped rows.** A continuation offset
+   computed for the pre-fit row count skips exactly the dropped rows when the
+   caller resumes (live 2026-08-26: 39 of 50 delivered with `next_offset: 50`
+   left rows 39-49 unreachable by pagination) — move it back by the drop,
+   inside the measured payload. Tallies that describe the result rows
+   (citation coverage, facet counts) are rebuilt per fit-prefix, never
+   computed over the pre-fit list. And if the tool pre-shrinks its own content
+   in a sizing loop, the loop's probe must not go through a layer that
+   swallows the single-oversized-item failure into a small (and therefore
+   fitting) error payload — require every item kept, then check the size.
+>>>>>>> after updating
 
 The two numbers are calibrated, not guessed. Anthropic documents a 25,000-token
 default maximum for Claude Code MCP output; the observed claude.ai rejection

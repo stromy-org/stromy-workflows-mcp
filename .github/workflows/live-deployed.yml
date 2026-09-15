@@ -1,0 +1,186 @@
+name: Deployed endpoint smoke
+
+# The COMPOSITION canary (org doctrine:
+# infra-docs/ai/published-artifact-contracts.md). Unit CI proves the parts;
+# nothing else observes the composed product — the deployed container
+# answering real MCP calls. Cross-repo changes (a published artifact, config,
+# an upstream contract) compose ONLY at the deployed surface — the au-gov-data
+# 2026-08-24→26 outage sat exactly there for two days with every per-repo
+# check green — so that surface gets its own daily probe.
+#
+# SETUP (once, after the first successful deploy): set the repo variable
+#   MCP_URL = https://<app-fqdn>/mcp
+# Until it is set, the run skips with a warning — a scaffold that has never
+# deployed must not alarm, but an unset MCP_URL on a LIVE server means this
+# canary is not watching it.
+
+on:
+  schedule:
+    - cron: "43 5 * * *" # daily, 05:43 UTC — stagger vs the fleet if you care
+  workflow_run:
+    workflows: ["Deploy to Azure Container Apps"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+jobs:
+  deployed-smoke:
+    # After a deploy, only smoke a deploy that actually succeeded — a failed
+    # deploy has its own red run and did not change what is serving.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Pre-flight — MCP_URL configured?
+        id: preflight
+        run: |
+          if [ -z "${{ vars.MCP_URL }}" ]; then
+            echo "::warning::MCP_URL repo variable is not set — the deployed-endpoint canary is NOT watching production. Set it to https://<app-fqdn>/mcp after the first deploy."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Azure login (OIDC)
+        # Only to ask whether the app exists. Skipped along with everything else
+        # when MCP_URL is unset, so a never-deployed scaffold stays a no-op.
+        if: steps.preflight.outputs.configured == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Is this server PARKED?
+        # ORG-289. Two ways a server is legitimately off, and neither has an
+        # endpoint worth smoking: RETIRED (terraform `enabled = false`, the
+        # container app is gone) and PAUSED (every revision deactivated by
+        # hand; the app exists, runs nothing, and a request cannot wake it).
+        # Without this the canary fails nightly and files a tracking issue for
+        # a server that is deliberately off -- an alarm that is always red is
+        # an alarm nobody reads, which is precisely what this canary must not
+        # become.
+        #
+        # Posture is read from the estate, not from a repo variable, so it
+        # cannot drift from what was actually done.
+        if: steps.preflight.outputs.configured == 'true'
+        id: posture
+        #
+        # Counts container apps in THIS server's resource group rather than
+        # looking one up by name: every MCP owns its own rg-<server>, and a
+        # name-based probe that mis-spells the app cannot tell "off" from
+        # "wrong name" -- it would silently disarm the canary, which is a worse
+        # failure than the one being fixed. Zero apps in the RG is unambiguous,
+        # and so is zero active revisions across them. Anything UNREADABLE is
+        # treated as live for the same reason.
+        run: |
+          names=$(az containerapp list --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query "[].name" -o tsv 2>/dev/null) || names="__unreadable__"
+          if [ "$names" = "__unreadable__" ]; then
+            echo "::warning::Could not read container apps in ${{ vars.AZURE_RESOURCE_GROUP }} - assuming LIVE so a broken probe never silently disarms this canary."
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$names" ]; then
+            echo "live=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Server retired::No container app - this server is RETIRED in terraform (enabled = false). Nothing to smoke; skipping rather than alarming."
+          else
+            active=0
+            for n in $names; do
+              c=$(az containerapp revision list --name "$n" --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query "length([?properties.active])" -o tsv 2>/dev/null) || { echo "::warning::Could not list revisions of $n - counting it as LIVE."; c=1; }
+              active=$((active + c))
+            done
+            if [ "$active" -gt 0 ]; then
+              echo "live=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "live=false" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Server paused::Every revision is deactivated (paused by hand). Nothing to smoke; skipping rather than alarming. Revive with az containerapp revision activate."
+            fi
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.preflight.outputs.configured == 'true' && steps.posture.outputs.live == 'true'
+
+      - name: Install uv
+        if: steps.preflight.outputs.configured == 'true' && steps.posture.outputs.live == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync deps
+        if: steps.preflight.outputs.configured == 'true' && steps.posture.outputs.live == 'true'
+        # No `|| uv sync` fallback: that silently relocks, so a lockfile that
+        # has drifted from pyproject.toml can never fail the build.
+        run: uv sync --frozen
+
+      - name: Run deployed-endpoint smoke tests
+        if: steps.preflight.outputs.configured == 'true' && steps.posture.outputs.live == 'true'
+        env:
+          MCP_URL: ${{ vars.MCP_URL }}
+        run: uv run pytest -m deployed -q
+
+      - name: Report failure on the tracking issue
+        # Dedup-with-re-arm (ORG-196): one open issue per streak, every
+        # recurrence recorded as a comment, auto-closed by the next green run
+        # so the alarm is never left muted.
+        if: failure()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'live-deployed',
+            });
+            if (existing.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: `Deployed smoke failed: ${new Date().toISOString().slice(0, 10)}`,
+                labels: ['live-deployed'],
+                body: [
+                  'The daily deployed-endpoint smoke failed — the PRODUCTION MCP is',
+                  'serving a broken or degraded composition (service × config ×',
+                  'published artifacts × upstreams). This is user-facing by',
+                  'construction.',
+                  '',
+                  `Run: ${runUrl}`,
+                  '',
+                  'Typical causes: a cross-repo change whose effect only exists at',
+                  'the deployed surface, an upstream contract change, or a deploy',
+                  'regression (see infra-docs/ai/published-artifact-contracts.md).',
+                  '',
+                  'This issue auto-closes on the next green run. Recurrences are',
+                  'added as comments below, so the comment count is the streak.',
+                ].join('\n'),
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `Still failing as of ${stamp} UTC — ${runUrl}`,
+              });
+            }
+
+      - name: Close the tracking issue on recovery
+        if: success() && steps.preflight.outputs.configured == 'true' && steps.posture.outputs.live == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'live-deployed',
+            });
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Deployed smoke passed — ${runUrl}. Closing; the alarm is armed again.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed',
+              });
+            }

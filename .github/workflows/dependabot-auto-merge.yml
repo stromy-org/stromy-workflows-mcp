@@ -2,10 +2,37 @@ name: dependabot-auto-merge
 
 # Auto-merges low-risk Dependabot PRs once required CI checks pass:
 #   * any patch bump, and
-#   * minor bumps that are NOT a direct production dependency (dev tooling and
-#     transitive pins) — those cannot change this package's runtime behaviour.
-# Minor bumps of direct production deps, and every major, stay for human review.
-# Security-grouped PRs of any severity also wait for review (Dependabot marks them).
+#   * any minor bump — direct production dependency or not,
+#   * ...for every ecosystem EXCEPT `docker` (see below).
+# Every major bump, and every `docker`-ecosystem update at ANY semver level,
+# stays for human review. Security-grouped PRs of any severity also wait for
+# review (Dependabot marks them).
+#
+# Widened 2026-08-28 (approved policy: dependabot-lowrisk-automerge). The prior
+# `dependency-type != direct:production` carve-out on minor bumps is now
+# inconsistent with the org's approved policy, which is keyed on PROVENANCE
+# (dependabot[bot] authorship) + update type (patch/minor, never major) — never
+# on which dependency class a minor bump happens to touch. This applies even on
+# `deploy_on_main: true` repos, where merging fires a production deploy — that
+# is the approved intent, not an oversight. See the "GATE 6 EXCEPTION" section
+# of stromy-org/scripts/merge-ready-prs.py's module docstring (the fallback
+# merger this native path is now aligned with) for the full rationale.
+#
+# `docker` EXCLUDED 2026-09-06 (incident: stromy-org/fetch-kit-mcp PR #5,
+# merged 2026-08-28). The safety argument above — "a minor bump cannot change
+# this package's runtime behaviour" — is true for LIBRARY semver and false for
+# a Docker base-image tag. This workflow auto-merged `FROM python:3.13-slim` ->
+# `python:3.14-slim` as a plain semver-minor bump; `uv.lock` pinned
+# `onnxruntime==1.20.1`, which ships `cp313`/`cp313t` wheels only, so every
+# image build failed for nine days before anyone noticed — the only signal was
+# a red check. An interpreter (or any base-image) minor-version bump routinely
+# breaks compiled/native wheels in a way a library's own semver contract never
+# would; a Docker tag's "minor" segment carries no compatibility promise at
+# all. So `package-ecosystem == 'docker'` is excluded from auto-merge entirely,
+# at every semver level (a "patch" base-image bump can still move the
+# underlying OS package set), and always waits for human review. Do not
+# simplify this back to matching library semver — that reasoning is correct
+# for libraries and was silently over-applied to container tags.
 #
 # REQUIRES `allow_auto_merge: true` ON THE REPO. That setting defaults to FALSE on
 # every newly created GitHub repo, and `gh pr merge --auto` is a SILENT no-op without
@@ -34,8 +61,14 @@ jobs:
 
       - name: Enable auto-merge for low-risk updates
         if: >-
+<<<<<<< before updating
           ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' ||
               steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+=======
+          ${{ steps.meta.outputs.package-ecosystem != 'docker' &&
+              (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+               steps.meta.outputs.update-type == 'version-update:semver-minor') }}
+>>>>>>> after updating
         run: |
           # `gh pr merge --auto` needs TWO preconditions, not the one documented
           # above:

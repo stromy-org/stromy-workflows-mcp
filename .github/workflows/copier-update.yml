@@ -1,11 +1,22 @@
 name: Copier update
 
 # Tier-1 of the MCP fleet-maintenance pipeline (ORG-PLAN-086). Runs
-# `copier update` against the template HEAD on a schedule, opens a PR with the
-# chrome-only diff, and NEVER auto-merges — a human reviews + merges. On a merge
-# conflict (`.rej` files present) it files/updates a single tracking issue
-# instead of a broken PR. This workflow itself is CHROME, so it flows down to
-# every satellite via the very updates it opens.
+# `copier update` against the newest template tag on a schedule, opens a PR with
+# the chrome-only diff, and NEVER auto-merges — a human reviews + merges. This
+# workflow itself is CHROME, so it flows down to every satellite via the very
+# updates it opens.
+#
+# EVERY RUN THAT CHANGED ANYTHING ENDS IN A PR — a conflicted one as a DRAFT,
+# titled so it cannot be mistaken for mergeable. It did not always: a conflicted
+# run used to open no PR at all, comment on a tracking issue, and exit 0. The
+# result, measured 2026-09-13: 8 of 9 fastmcp satellites pinned at v0.9.6 since
+# 2026-08-11 — five weeks — each behind a GREEN weekly tick and one more
+# "Re-detected on <date>" comment that no detector counted and nobody read. An
+# issue comment is not a signal; an open PR is, because the org's PR census
+# already enumerates those. The tracking issue survives as a SECONDARY channel
+# and is `continue-on-error` — a repo with Issues disabled took the whole run red
+# there every week (asset-broker-mcp), which is a failure about the channel, not
+# about the update.
 
 on:
   schedule:
@@ -49,6 +60,36 @@ jobs:
           token: ${{ steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
 
+      # A satellite with no App token cannot read the private template, so the
+      # only honest outcomes are "skipped" or "did the work" — never "failed".
+      # Before this gate existed the token step skipped correctly and every
+      # LATER step ran anyway, so `copier update` shelled out to an
+      # unauthenticated `git ls-remote` and the job died red with
+      # "Repository not found". Measured 2026-09-05 on the PUBLIC satellites
+      # (stromy-workflows-mcp among them), which had been failing that way on
+      # every weekly run, indistinguishable from a real breakage. A
+      # permanently-red alarm nobody can act on is the documented way a gate
+      # gets trained away.
+      - name: Check token availability
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ -z "${{ steps.app-token.outputs.token }}" ]; then
+            echo "::warning title=Copier update skipped::No stromy-ci App token available for ${{ github.repository }}. Expected on a PUBLIC satellite — the CI_APP org secrets are scoped to private repos only (ci-secret-scope.json), so this repo can never authenticate to the private template. Its updates arrive by push instead, from stromy-org's push-template-sync.yml. This run did nothing."
+            {
+              echo "### Copier update: SKIPPED"
+              echo ""
+              echo "No \`stromy-ci\` App token available — cannot authenticate to the"
+              echo "private \`fastmcp-template\` repo. Nothing was done."
+              echo ""
+              echo "This is expected on a public satellite; template updates reach it"
+              echo "via \`push-template-sync.yml\` in stromy-org."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Ensure scheduled-routine label exists
         env:
           # In-repo issue/label writes use the workflow's own token — the
@@ -69,10 +110,15 @@ jobs:
             --force
 
       - name: Install uv
+<<<<<<< before updating
+=======
+        if: steps.gate.outputs.ok == 'true'
+>>>>>>> after updating
         uses: astral-sh/setup-uv@v7
 
       - name: Run copier update
         id: update
+        if: steps.gate.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
@@ -88,78 +134,233 @@ jobs:
           # token instead.
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/stromy-org/".insteadOf "https://github.com/stromy-org/"
 
-          # --skip-answered keeps recorded answers; --trust runs template
-          # _tasks; --conflict rej makes a genuine merge conflict
-          # deterministic (writes .rej files) instead of copier's default
-          # `inline` mode, which leaves conflict markers in place that the
-          # detection below has no reliable way to see.
+          # --skip-answered keeps recorded answers; --defaults answers any NEW
+          # question instead of hanging on stdin; --conflict rej makes a genuine
+          # merge conflict deterministic (writes .rej files) instead of copier's
+          # default `inline` mode, which leaves markers in the files AND an
+          # UNMERGED INDEX behind — see the detection block below.
+          #
+          # --skip-tasks is load-bearing, not an optimisation. Copier runs
+          # `_tasks` inside both of its temp renders, so every task that writes a
+          # file puts that file into the update diff. This template's tasks write
+          # `uv.lock` (via `uv sync`), CLAUDE.md + .github/copilot-instructions.md
+          # (render-agent-md.py) and .mcp.json + .codex + .gemini
+          # (render-mcp.py) — none of which the template even ships. Measured
+          # 2026-09-13 on nl-gov-data: those generated files were 33 of 42
+          # rejected hunks, uv.lock alone 27. copier.yml now gates the tasks to
+          # `copy`, but that gate CANNOT help a behind satellite: copier
+          # re-renders the satellite's own (old) template version to compute the
+          # diff, so v0.9.6's ungated tasks still run. This flag is what actually
+          # unblocks it. The generators run instead in the next step, once,
+          # against the real merged tree.
           set +e
-          uvx copier update --trust --skip-answered --defaults --conflict rej
+          uvx copier update --trust --skip-answered --defaults --conflict rej --skip-tasks
           COPIER_EXIT=$?
           set -e
+          echo "copier_exit=$COPIER_EXIT" >> "$GITHUB_OUTPUT"
 
-          # Detect merge rejects (copier writes *.rej on conflict in --conflict rej mode).
-          if find . -name '*.rej' -not -path './.git/*' | grep -q .; then
+      # The generators copier.yml no longer runs on update, run ONCE against the
+      # real merged tree. AGENTS.md is canonical and CLAUDE.md +
+      # .github/copilot-instructions.md are derived from it, so a template change
+      # to AGENTS.md that did not regenerate them would land the PR already in
+      # drift — exactly what instruction-audit fails on. Same for the four
+      # per-agent MCP configs derived from .agents/mcp.json.
+      #
+      # Non-fatal by design: on a conflicted run AGENTS.md may carry reject
+      # residue and a generator can legitimately choke on it. That is a fact for
+      # the human resolving the conflict, not a reason to lose the whole update.
+      - name: Regenerate generated artifacts
+        if: steps.gate.outputs.ok == 'true'
+        run: |
+          set -uo pipefail
+          for gen in scripts/render-agent-md.py scripts/render-mcp.py; do
+            if [ -f "$gen" ]; then
+              if ! python3 "$gen"; then
+                echo "::warning title=Generator failed::$gen exited non-zero. Expected when a conflict left residue in its input; regenerate by hand while resolving."
+              fi
+            fi
+          done
+          # Keep the lockfile consistent with whatever pyproject.toml the merge
+          # produced. A PR whose pyproject moved but whose uv.lock did not is red
+          # on arrival — CI resolves with `--frozen`.
+          if [ -f pyproject.toml ]; then
+            if ! uv lock; then
+              echo "::warning title=uv lock failed::pyproject.toml and uv.lock may disagree in this PR. Re-lock by hand while resolving."
+            fi
+          fi
+
+      - name: Detect result
+        id: result
+        if: steps.gate.outputs.ok == 'true'
+        run: |
+          set -uo pipefail
+
+          # `git add -A` FIRST, and it is doing two jobs. It stages the update so
+          # the checks below read one consistent view, and — the load-bearing
+          # half — it RESOLVES any unmerged index entry copier's 3-way apply left
+          # behind. Without it, `peter-evans/create-pull-request` dies on its own
+          # first command with `error: you need to resolve your current index
+          # first / <file>: needs merge`, an exit-1 that names neither copier nor
+          # a conflict. Measured 2026-09-08 on media-gen: six consecutive red
+          # weekly runs whose actual cause was one unmerged index entry.
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            echo "Already current with the latest template tag — nothing to do."
+            echo "### Copier update: already current" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          # THREE independent conflict signals, because each of copier's modes
+          # leaves a different trace and checking only one is how a conflicted
+          # update passed for `clean`:
+          #   .rej files      — `--conflict rej` (this workflow's mode)
+          #   inline markers  — copier's DEFAULT mode, and what a satellite still
+          #                     running an older copy of this workflow produces
+          #   unmerged index  — git's 3-way apply, which can leave stage entries
+          #                     with no .rej file at all
+          REJ="$(find . -name '*.rej' -not -path './.git/*' 2>/dev/null | sed 's#^\./##' || true)"
+          MARKERS="$(git diff --cached --name-only | while IFS= read -r f; do
+            [ -f "$f" ] && grep -lE '^<<<<<<< ' -- "$f" 2>/dev/null || true
+          done)"
+          UNMERGED="$(git ls-files -u | awk '{print $4}' | sort -u || true)"
+
+          if [ -n "$REJ$MARKERS$UNMERGED" ]; then
             echo "conflict=true" >> "$GITHUB_OUTPUT"
-            HAS_REJECTS=true
+            {
+              echo "conflict_files<<CONFLICT_EOF"
+              printf '%s\n' $REJ $MARKERS $UNMERGED | sort -u | grep -v '^$' || true
+              echo "CONFLICT_EOF"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "conflict=false" >> "$GITHUB_OUTPUT"
-            HAS_REJECTS=false
           fi
 
-          # A non-zero exit with NO .rej files is a genuine failure (auth,
-          # template error, crash) — fail the job instead of swallowing it.
-          # A non-zero exit WITH .rej files is copier's expected "conflicts
-          # found" outcome, which routes to the tracking-issue step below.
-          if [ "$COPIER_EXIT" -ne 0 ] && [ "$HAS_REJECTS" = "false" ]; then
-            echo "::error::copier update exited $COPIER_EXIT with no .rej conflict files present — treating this as a genuine failure, not a mergeable conflict."
-            exit "$COPIER_EXIT"
+          # A non-zero copier exit with NO conflict trace at all is a genuine
+          # failure (auth, template error, crash) — fail rather than ship it.
+          if [ "${{ steps.update.outputs.copier_exit }}" != "0" ] && [ -z "$REJ$MARKERS$UNMERGED" ]; then
+            echo "::error::copier update exited ${{ steps.update.outputs.copier_exit }} with no conflict trace (.rej / markers / unmerged index) — a genuine failure, not a mergeable conflict."
+            exit 1
           fi
 
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
           # Flag whether the diff touches auto-redeploy paths (merge == redeploy).
-          if git status --porcelain | grep -qE '(pyproject\.toml|uv\.lock|Dockerfile|src/|skills/)'; then
-            echo "redeploys=true" >> "$GITHUB_OUTPUT"
+          if git diff --cached --name-only | grep -qE '(pyproject\.toml|uv\.lock|Dockerfile|src/|skills/)'; then
+            REDEPLOYS=true
+            DEPLOY_LINE="YES — the diff touches an auto-redeploy path (pyproject.toml / uv.lock / Dockerfile / src/ / skills/); merging will trigger deploy-aca."
           else
-            echo "redeploys=false" >> "$GITHUB_OUTPUT"
+            REDEPLOYS=false
+            DEPLOY_LINE="no — workflow/scripts/docs-only chrome; no redeploy."
           fi
+          echo "redeploys=$REDEPLOYS" >> "$GITHUB_OUTPUT"
 
+          # Compose the PR body here rather than in the PR step: a GitHub Actions
+          # expression string literal cannot span newlines, so a conditional
+          # multi-paragraph body is not expressible inline.
+          {
+            echo "pr_body<<PR_BODY_EOF"
+            echo "Automated \`copier update\` against the newest \`fastmcp-template\` tag"
+            echo "(Tier-1, ORG-PLAN-086). Review the **chrome-only** diff and merge —"
+            echo "this PR is **never** auto-merged."
+            echo ""
+            echo "**Deploy on merge:** $DEPLOY_LINE"
+            echo ""
+            if [ -n "$REJ$MARKERS$UNMERGED" ]; then
+              echo "## ⚠️ OPENED AS A DRAFT — unresolved conflicts"
+              echo ""
+              echo "\`copier update\` could not merge every hunk cleanly. This branch carries"
+              echo "the parts that DID apply plus the conflict residue, so the work is not"
+              echo "thrown away — but it is **not mergeable as-is**."
+              echo ""
+              echo "Files needing a human:"
+              echo ""
+              echo '```'
+              printf '%s\n' $REJ $MARKERS $UNMERGED | sort -u | grep -v '^$' || true
+              echo '```'
+              echo ""
+              echo "To resolve: check the branch out, reconcile each file (template chrome"
+              echo "wins; your individuality files win), delete every \`*.rej\`, re-run"
+              echo "\`uv lock\`, then mark this PR ready for review. A \`.rej\` whose hunk is"
+              echo "already satisfied in the file is residue — delete it. If this repo is"
+              echo "many versions behind, a Tier-2 \`copier recopy\` re-baseline may be the"
+              echo "cheaper route (\`infra-docs/ai/mcp-fleet-maintenance.md\`)."
+              echo ""
+            fi
+            echo "If your domain code, deps, or version changed here, STOP — the"
+            echo "three-zone model means updates must only touch chrome. Report it."
+            echo "PR_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # A CONFLICTED UPDATE STILL GETS A PR — as a draft. It used to get no PR
+      # at all, only a comment on a tracking issue, and the job exited 0: so six
+      # fastmcp satellites sat pinned at v0.9.6 from 2026-08-11 to 2026-09-13
+      # behind a GREEN weekly tick, each accumulating one more "Re-detected on
+      # <date>" comment nobody read and no detector counted. A draft PR is an
+      # artifact the org's own open-PR census (`pr-census.py`,
+      # `audit-open-prs.py`) already enumerates, which is what "wire, count,
+      # route" means here — and the work survives instead of being recomputed and
+      # thrown away every week. Draft, so it cannot be mistaken for mergeable.
       - name: Open update PR (never auto-merge)
+<<<<<<< before updating
         if: steps.update.outputs.changed == 'true' && steps.update.outputs.conflict == 'false'
+=======
+        if: steps.gate.outputs.ok == 'true' && steps.result.outputs.changed == 'true'
+>>>>>>> after updating
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.app-token.outputs.token || github.token }}
           branch: chore/copier-update
           delete-branch: true
+          draft: ${{ steps.result.outputs.conflict == 'true' }}
           commit-message: "chore: ⬆️ Adopt fastmcp-template updates (copier update)"
-          title: "chore: ⬆️ Adopt fastmcp-template updates"
+          # Double-quoted YAML scalar, and it has to be: both branches contain
+          # `chore: `, and an unquoted value with a `: ` in it is read as a nested
+          # mapping ("mapping values are not allowed here").
+          title: "${{ steps.result.outputs.conflict == 'true' && 'chore: ⬆️ Adopt fastmcp-template updates (CONFLICTS — needs resolution)' || 'chore: ⬆️ Adopt fastmcp-template updates' }}"
           labels: scheduled-routine
-          body: |
-            Automated `copier update` from the `fastmcp-template` HEAD (Tier-1,
-            ORG-PLAN-086). Reviews the **chrome-only** diff and merge — this PR is
-            **never** auto-merged.
+          # Built in the previous step, not composed here: a GitHub Actions
+          # expression string literal cannot span newlines, so a conditional
+          # multi-paragraph body is not expressible inline.
+          body: ${{ steps.result.outputs.pr_body }}
 
-            **Deploy on merge:** ${{ steps.update.outputs.redeploys == 'true' && 'YES — the diff touches an auto-redeploy path (pyproject.toml / uv.lock / Dockerfile / src/ / skills/); merging will trigger deploy-aca.' || 'no — workflow/scripts/docs-only chrome; no redeploy.' }}
-
-            If your domain code, deps, or version changed here, STOP — the
-            three-zone model means updates must only touch chrome. Report it.
-
-      - name: File conflict tracking issue
-        if: steps.update.outputs.conflict == 'true'
+      # The conflict issue is a SECONDARY channel — the draft PR above is the
+      # primary one. This step therefore must never fail the job: a repo with
+      # Issues disabled used to take the whole run red here, every week, on a
+      # `gh issue create` the run could not possibly satisfy (measured 2026-09-13
+      # on asset-broker-mcp, `has_issues: false` — six consecutive failures whose
+      # reported cause was nothing to do with the update).
+      - name: File conflict tracking issue (best effort)
+        if: steps.gate.outputs.ok == 'true' && steps.result.outputs.conflict == 'true'
+        continue-on-error: true
         env:
           # In-repo issue/label writes use the workflow's own token — the
           # permissions block grants it; the stromy-ci App deliberately lacks
           # Issues permission (verified 2026-08-07: createIssue 403'd).
           GH_TOKEN: ${{ github.token }}
+          CONFLICT_FILES: ${{ steps.result.outputs.conflict_files }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          if [ "$(gh api "repos/${{ github.repository }}" --jq '.has_issues')" != "true" ]; then
+            echo "::warning title=Issues disabled::Cannot file a conflict-tracking issue on ${{ github.repository }} (Issues are disabled). The draft PR is the record."
+            {
+              echo "### Conflict recorded on the draft PR only"
+              echo ""
+              echo "Issues are disabled on this repo, so no tracking issue was filed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           TITLE="copier update: merge conflicts need manual reconciliation"
+          BODY="\`copier update\` hit conflicts a human must reconcile. **A DRAFT PR on \`chore/copier-update\` carries the work** — resolve it there rather than starting over.
+
+          Conflicting files:
+          \`\`\`
+          $CONFLICT_FILES
+          \`\`\`
+
+          Template chrome wins; your individuality files win. Delete every \`*.rej\` once its hunk is satisfied, re-run \`uv lock\`, then mark the PR ready. Tier-2 \`copier recopy\` re-baseline may be cheaper if this repo is far behind (see infra-docs/ai/mcp-fleet-maintenance.md)."
           EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
-          BODY="\`copier update\` produced \`.rej\` merge rejects that need a human. Run \`uvx copier update --trust\` locally, resolve the \`.rej\` files (chrome wins; keep your individuality files), and open the PR by hand. Tier-2 \`copier recopy\` re-baseline may be warranted if this repo is far behind (see infra-docs/ai/mcp-fleet-maintenance.md)."
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body "Re-detected on $(date -u +%Y-%m-%d). $BODY"
           else

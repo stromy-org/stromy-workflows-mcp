@@ -57,8 +57,9 @@ Stromy Workflows MCP/
 
 1. Create `components/tools/<verb>_<noun>.py` defining one function.
 2. `from fastmcp.tools import tool`, decorate with `@tool`, add a docstring (FastMCP uses it as the tool description).
-3. Add a test in `tests/test_tools.py`.
-4. Run `uv run pytest -k <tool>`. (No `server.py` edit — `FileSystemProvider` discovers it.)
+3. **If it returns a list, a table, or long text: budget the result** — build the payload through `fit_json_result` from `stromy_workflows_mcp.response_budget`, declare an output schema, and give it a `narrowing_hint`. `components/tools/example_tool.py` is the shape to copy. A `max_results` cap is a UX bound, not a size guarantee.
+4. Add a test in `tests/test_tools.py`. For a budgeted tool, assert through a real `fastmcp.Client` call that the joined `TextContent` is within budget — `tests/test_response_budget.py` has the pattern.
+5. Run `uv run pytest -k <tool>`. (No `server.py` edit — `FileSystemProvider` discovers it.)
 
 ### Add a resource
 
@@ -163,6 +164,7 @@ The template separates **CHROME** (template-owned, safe to overwrite) from **IND
 - **Tests are non-negotiable.** No commit that breaks `uv run pytest` lands on main.
 - **Promotion is one-way.** Once a skill lives canonically in this MCP, workspace-studio's copy is read-only.
 - **Stick to scaffold-defined directories.** Runtime assets go inside `src/`, `components/`, or `skills/`. A bespoke top-level dir (e.g. `templates/`, `data/`, `schemas/`) silently ships empty in production because the scaffold's Dockerfile doesn't copy it. Reshape to a `@resource` under `components/resources/` instead — see [component-shapes.md](https://github.com/stromy-org/stromy-org/blob/main/scaffolds/fastmcp-template/references/component-shapes.md).
+- **Budget every result the LLM reads, server-side.** The budget is the COMPLETE MCP-visible text (40,000 characters by default; 60,000 only for a named complete/detail mode), not a row count and not a per-row estimate — a 200-row response was rejected at 70,681 characters on 2026-08-25 while its cap was working exactly as designed. Truncation preserves coverage/continuation and names the narrowing move; it never suggests raising a cap. Bulk and binary output goes by reference. Helper: `stromy_workflows_mcp/response_budget.py`; standard: `infra-docs/ai/mcp-response-budgeting.md`.
 - **Design tools to be forgiving toward LLM clients.** Default to upsert over `NotFound`, return valid enum options in error strings, make finalize/delete idempotent. The LLM cannot recover from strict 4xx the way a human programmer can. Pattern + rationale in the same reference doc.
 
 ## Reference

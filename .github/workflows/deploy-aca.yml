@@ -91,6 +91,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Mint stromy-ci App token (clone private internal libs)
+<<<<<<< before updating
         # SKIPPED, not failed-and-tolerated (ORG-232). On a PUBLIC satellite the
         # org App secrets are not visible, so this mint used to fail on every
         # single deploy under `continue-on-error` — a permanent red annotation
@@ -103,6 +104,15 @@ jobs:
         if: >-
           steps.preflight.outputs.oidc_ready == 'true' &&
           steps.preflight.outputs.app_creds == 'true'
+=======
+        # continue-on-error: on a PUBLIC satellite the org App secrets are not
+        # visible; the mint fails, the build secret is empty, and the
+        # Dockerfile's `if -s` guard skips the URL rewrite — an all-public
+        # dependency set still builds. A private-dep public satellite must
+        # vendor its own auth (see stromy-workflows-mcp).
+        if: steps.preflight.outputs.oidc_ready == 'true'
+        continue-on-error: true
+>>>>>>> after updating
         uses: actions/create-github-app-token@v3
         id: app-token
         with:
@@ -136,8 +146,61 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Update Container App image
+      - name: Is this server PARKED?
+        # ORG-289. Two ways a server is legitimately off, and a rollout would
+        # undo BOTH, because `az containerapp update` always creates a new
+        # ACTIVE revision:
+        #
+        #   retired -- `enabled = false` in terraform destroyed the container
+        #              app (the RG, environment, Entra app and FQDN survive).
+        #              The app does not exist.
+        #   paused  -- every revision was deactivated by hand
+        #              (`az containerapp revision deactivate`). The app, its
+        #              env vars and secrets all still exist; it just runs
+        #              nothing and a request cannot wake it. This is the pause
+        #              for "back in a couple of weeks": terraform's retire
+        #              loses the operator-set env/secret values (the module
+        #              has ignore_changes on them), a deactivate keeps them.
+        #
+        # Both are read from the estate itself, never from a repo flag that
+        # could drift from what was actually done. This is the fix for the
+        # 2026-09-06 -> 09-09 incident: six servers paused by deactivate were
+        # redeployed within three days by routine pushes (a skills sync,
+        # dependabot, a branch sweep) because this step did not exist.
+        #
+        # The build ABOVE still ran. That is deliberate: main must stay
+        # current and provable on an off server -- the image is in GHCR, so
+        # revival is `revision activate` (paused) or enabled = true + apply
+        # (retired), then one dispatch of this workflow, with no rebuild.
+        #
+        # An UNREADABLE posture fails the job: skipping silently would look
+        # like a pause, and rolling out blindly could wake a paused server.
         if: steps.preflight.outputs.oidc_ready == 'true'
+<<<<<<< before updating
+=======
+        id: posture
+        run: |
+          if ! err=$(az containerapp show --name stromy-workflows-mcp --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} -o none 2>&1 >/dev/null); then
+            if echo "$err" | grep -qiE "ResourceNotFound|could not be found|does not exist"; then
+              echo "live=false" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Server retired::No container app for stromy-workflows-mcp - it is RETIRED in terraform (enabled = false). Image built and pushed to GHCR; rollout skipped. Revive with enabled = true, apply, then re-run this workflow."
+              exit 0
+            fi
+            echo "::error title=Posture unreadable::Could not read container app stromy-workflows-mcp: $err"
+            exit 1
+          fi
+          active=$(az containerapp revision list --name stromy-workflows-mcp --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+                     --query "length([?properties.active])" -o tsv)
+          if [ "$active" = "0" ]; then
+            echo "live=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Server paused::stromy-workflows-mcp has no active revision (paused with az containerapp revision deactivate). Image built and pushed to GHCR; rollout skipped so this deploy does not wake it. Revive with az containerapp revision activate, then re-run this workflow."
+          else
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update Container App image
+        if: steps.preflight.outputs.oidc_ready == 'true' && steps.posture.outputs.live == 'true'
+>>>>>>> after updating
         uses: azure/cli@v3
         with:
           inlineScript: |
@@ -147,7 +210,7 @@ jobs:
               --image ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
 
       - name: Verify deploy — the NEW revision is serving
-        if: steps.preflight.outputs.oidc_ready == 'true'
+        if: steps.preflight.outputs.oidc_ready == 'true' && steps.posture.outputs.live == 'true'
         # NOT a plain `curl https://$FQDN/health` loop. `az containerapp update`
         # returns once the revision is ACCEPTED, and the app FQDN keeps serving
         # the OUTGOING revision until rollover completes — so such a loop passed
