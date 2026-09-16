@@ -122,4 +122,4 @@ stromy-asset-transport = { git = "https://github.com/stromy-org/asset-transport.
 # public, and a public caller cannot read a private repo. The library is
 # client-neutral by construction — it hardcodes no client, vault URI, provider
 # endpoint or service name — so the pinned-PUBLIC-tag pattern applies unchanged.
-stromy-byok = { git = "https://github.com/stromy-org/stromy-byok.git", tag = "v0.3.0" }
+stromy-byok = { git = "https://github.com/stromy-org/stromy-byok.git", tag = "v0.3.1" }
