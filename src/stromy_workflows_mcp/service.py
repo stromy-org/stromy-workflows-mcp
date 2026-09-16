@@ -73,6 +73,50 @@ def _require_run_scope(run: registry.Run | None, scope: CallerScope) -> registry
     return run
 
 
+def _run_payload(run: registry.Run, scope: CallerScope) -> dict[str, Any]:
+    """The run projection this facade returns, redacted for a scoped caller.
+
+    ONE function, called everywhere a run reaches a caller, for the same reason
+    the core keeps ``RunRecord.public`` single: a projection assembled in several
+    places is how one of them ends up missing the redaction nobody re-read.
+
+    **What is withheld is the free-text failure message, and only for a scoped
+    caller.** Deny-by-default, like ``PUBLIC_EXECUTION_METADATA_KEYS``: an
+    exception's message is written for whoever will debug it, and there is no
+    reliable way to sort the ones that were written for a client from the ones
+    that were not. Run ``284e0cdf`` returned ``"cannot rebind an active
+    AuditLogger to another trace"`` verbatim to a client surface — an internal
+    invariant, meaningless to the reader and a description of our internals to
+    anyone else. The messages that *look* safe are no better: the runner's own
+    credential failure names our entitlement registry and tells the reader to set
+    keys on a job they have no access to.
+
+    **What survives is everything the client can act on**: ``stage`` (where it
+    died), ``error_type``, ``retryable`` and its ``reason`` (whether another run
+    is worth funding), ``spends`` (whose money that would be) and
+    ``correlation_id`` — the handle that lets an operator find the frames. So
+    this narrows what a client learns about *us* without narrowing what they
+    learn about their run.
+
+    An operator (``scope.unrestricted``) sees the payload unchanged.
+    """
+    payload = run.public()
+    if scope.unrestricted:
+        return payload
+
+    failure = payload.get("failure")
+    stage = failure.get("stage") if isinstance(failure, dict) else None
+    if payload.get("error") is not None:
+        payload["error"] = (
+            f"the run failed at stage {stage}"
+            if isinstance(stage, str) and stage
+            else "the run failed"
+        )
+    if isinstance(failure, dict):
+        payload["failure"] = {k: v for k, v in failure.items() if k != "message"}
+    return payload
+
+
 def list_workflows(scope: CallerScope) -> list[dict[str, Any]]:
     return [load_contract(name).summarize(_role(scope)) for name in visible_workflows(scope)]
 
@@ -431,7 +475,7 @@ async def start_run(
         scope=scope,
     )
     if run.run_id != run_id:
-        return {**run.public(), "idempotent_replay": True}
+        return {**_run_payload(run, scope), "idempotent_replay": True}
 
     # Enqueue only AFTER the row is committed. The reverse order would let a
     # runner receive a message for a run that does not exist yet.
@@ -450,7 +494,7 @@ async def start_run(
         # dispatch id makes a duplicate message a no-op at claim time.
         await asyncio.to_thread(_mark_dispatch_failed, run_id, str(exc))
         raise DispatchError(f"run {run_id} was created but not dispatched: {exc}") from exc
-    return run.public()
+    return _run_payload(run, scope)
 
 
 #: Event kind the runner's retention pass writes before it destroys anything. Its
@@ -566,7 +610,7 @@ async def retry_run(
     # Exactly the same projection every other run-returning call uses. The lineage
     # is already in it, under ``attempt`` — repeating ``retry_of`` at the top level
     # would give one fact two homes, which is how the two diverge later.
-    return attempt.public()
+    return _run_payload(attempt, scope)
 
 
 def _reusable_config(run: registry.Run, role: CallerRole) -> dict[str, Any] | None:
@@ -593,7 +637,7 @@ def _reusable_config(run: registry.Run, role: CallerRole) -> dict[str, Any] | No
 def run_status(run_id: str, scope: CallerScope) -> dict[str, Any]:
     with registry.connect() as conn:
         run = _require_run_scope(registry.get_run(conn, run_id), scope)
-    payload = run.public()
+    payload = _run_payload(run, scope)
     config = _reusable_config(run, _role(scope))
     if config is not None:
         payload["config"] = config
@@ -604,7 +648,7 @@ def list_runs(scope: CallerScope, limit: int = 50) -> list[dict[str, Any]]:
     slugs = None if scope.unrestricted else sorted(scope.client_slugs)
     with registry.connect() as conn:
         runs = registry.list_runs(conn, client_slugs=slugs, limit=min(max(limit, 1), 100))
-    return [run.public() for run in runs]
+    return [_run_payload(run, scope) for run in runs]
 
 
 #: Ceiling on a resume payload. Generous for what this channel is actually for —
@@ -692,14 +736,14 @@ async def resume_run(
         # operator re-dispatch is safe because the dispatch id de-duplicates.
         await asyncio.to_thread(_mark_dispatch_failed, run_id, str(exc))
         raise DispatchError(f"run {run_id} was resumed but not dispatched: {exc}") from exc
-    return resumed.public()
+    return _run_payload(resumed, scope)
 
 
 def cancel_run(run_id: str, scope: CallerScope) -> dict[str, Any]:
     with registry.connect() as conn:
         _require_run_scope(registry.get_run(conn, run_id), scope)
         cancelled = registry.cancel_run(conn, run_id)
-    return cancelled.public()
+    return _run_payload(cancelled, scope)
 
 
 def _public_base_url() -> str:
