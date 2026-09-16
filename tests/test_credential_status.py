@@ -180,10 +180,64 @@ def test_an_unprovisioned_store_reports_unavailable_not_unregistered(
 
 
 def test_status_applies_the_same_gates_as_minting(declared: None) -> None:
+    """The cross-client gate is the load-bearing one and is unchanged.
+
+    A caller scoped to one client may never read another's registration state,
+    whether it names the slug or leaves it to be implied.
+    """
     with pytest.raises(PermissionError, match="not authorized for client"):
         _status(STROMY, "dukestrategies")
-    with pytest.raises(PermissionError, match="client_slug is required"):
-        service.credential_status(WORKFLOW, {}, OPERATOR)
+
+
+def test_operator_without_a_client_gets_the_workflow_level_view(declared: None) -> None:
+    """`client_context` is optional, and for an operator that now means something.
+
+    It used to raise `PermissionError("client_slug is required")` -- borrowed
+    from `require_client`, whose refusal exists because the run owner decides
+    whose brand a deliverable ships in. Nothing is being shipped here: this is a
+    read of what the workflow DECLARES. Borrowing the run path's refusal made a
+    documented optional argument unusable for precisely the caller the signature
+    invites, and it is the call ORG-PLAN-300's own "how to test" snippet makes.
+    """
+    status = service.credential_status(WORKFLOW, {}, OPERATOR)
+
+    assert status["workflow"] == WORKFLOW
+    assert status["scope"] == "workflow"
+    # No owner was named, so none is invented -- the substitution
+    # `require_client` exists to prevent.
+    assert status["client_slug"] is None
+    assert status["declared"]
+
+    # Registration state keys on a (workflow, client) pair. With no client there
+    # is none, and every entry says so rather than reading `not_registered`,
+    # which would be an answer about a subject that does not exist.
+    assert status["credentials"]
+    for entry in status["credentials"]:
+        assert entry["client_scoped"] is True
+        assert "status" not in entry
+        assert "last_rotated_at" not in entry
+    assert "client_slug" in status["note"]
+
+
+def test_workflow_level_view_never_reads_the_vault(
+    declared: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no subject there is nothing to look up -- so nothing is looked up."""
+
+    def _explode() -> NullCredentialStore:  # pragma: no cover - must not run
+        raise AssertionError("the workflow-level view must not touch the store")
+
+    monkeypatch.setattr(credentials, "credential_store", _explode)
+    status = service.credential_status(WORKFLOW, {}, OPERATOR)
+    assert status["scope"] == "workflow"
+
+
+def test_operator_naming_a_client_still_gets_the_client_view(declared: None) -> None:
+    """The new branch must be reachable ONLY when no slug was supplied."""
+    status = service.credential_status(WORKFLOW, {"client_slug": "stromy"}, OPERATOR)
+    assert status["client_slug"] == "stromy"
+    assert status.get("scope") != "workflow"
+    assert all("status" in entry for entry in status["credentials"])
 
 
 def test_undeclared_requirements_report_nothing_to_register(

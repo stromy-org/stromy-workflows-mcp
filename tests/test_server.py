@@ -597,3 +597,55 @@ def test_list_workflows_summarizes_rather_than_dumping_every_contract(monkeypatc
     ]
     described = service.describe_workflow("stakeholder_analysis_workflow", scope)
     assert described["keys"], "describe must carry the tiered contract list cannot"
+
+
+def test_operator_naming_a_workflow_wrongly_is_told_the_valid_set() -> None:
+    """A near-miss name is the common way to reach a failed contract load.
+
+    The answer the caller needs is the valid set. Letting the underlying
+    OSError through spelled the absolute in-container contract path into the
+    tool result instead -- no help for the caller, and an internal path
+    published to anyone whose scope reaches the call. The client path is
+    unaffected: `require_visible` refuses first, and must keep answering
+    identically for unentitled and nonexistent (asserted above).
+    """
+    operator = CallerScope(frozenset(), unrestricted=True)
+    with pytest.raises(ContractError) as exc:
+        # The hosted name is `stakeholder_analysis_workflow`; this is the
+        # near-miss an operator agent actually made.
+        service.describe_workflow("stakeholder_analysis", operator)
+
+    message = str(exc.value)
+    assert "stakeholder_analysis_workflow" in message, "must name the valid set"
+    assert "/" not in message, f"leaked a filesystem path: {message}"
+    assert ".json" not in message
+    assert "No such file" not in message
+
+
+def test_operator_is_told_tier3_pins_are_theirs_to_override() -> None:
+    """`pinned` is shown only to an operator, who is also the one caller who may
+    override it -- so shown without that, it reads as a lock that is not one.
+
+    An operator agent on the ORG-PLAN-300 C9 proof run read "provider-locked,
+    pinned", watched `validate_config` accept a different value, and reported a
+    contract discrepancy that did not exist.
+    """
+    operator = CallerScope(frozenset(), unrestricted=True)
+    described = service.describe_workflow("stakeholder_analysis_workflow", operator)
+
+    assert any(key["tier"] == 3 for key in described["keys"]), "fixture needs a tier-3 key"
+    assert "override" in described["tier3_note"]
+
+
+def test_a_client_is_never_shown_the_tier3_note(monkeypatch) -> None:
+    """The note describes a capability a client does not have, beside a field
+    a client never sees. It must not advertise the override to them."""
+    _entitlements(
+        monkeypatch,
+        {"stakeholder_analysis_workflow": frozenset({"dukestrategies"})},
+    )
+    scope = CallerScope(frozenset({"dukestrategies"}))
+    described = service.describe_workflow("stakeholder_analysis_workflow", scope)
+
+    assert "tier3_note" not in described
+    assert all("pinned" not in key for key in described["keys"])

@@ -947,6 +947,66 @@ def create_credential_registration_link(
     return payload
 
 
+def _workflow_level_credential_summary(workflow: str) -> dict[str, Any]:
+    """What a workflow declares, with no client in the picture.
+
+    Registration state is a property of a (workflow, client) pair, so with no
+    client there is none to report -- and reporting `not_registered` would be a
+    lie about a subject that does not exist. Every entry therefore carries
+    `client_scoped: true` and no `status`, which is the difference between "not
+    asked" and "answered no".
+
+    The vault is never touched here: with no subject there is nothing to look
+    up, and constructing one from a fallback slug is precisely the substitution
+    `require_client` exists to prevent.
+    """
+    contract = load_contract(workflow)
+    requirements = contract.requirements
+    payload: dict[str, Any] = {
+        "workflow": workflow,
+        "client_slug": None,
+        "scope": "workflow",
+        "declared": requirements.declared,
+        "credentials": [],
+        "note": (
+            "Operator call with no client_slug: this reports what the workflow "
+            "DECLARES, not what any client has registered. Pass "
+            "client_context={'client_slug': '<slug>'} for registration state."
+        ),
+    }
+    if not requirements.declared:
+        payload["note"] = (
+            "This workflow has not declared its credential requirements yet, so "
+            "there is nothing to register against it."
+        )
+        return payload
+
+    drift: list[str] = []
+    entries: list[dict[str, Any]] = []
+    for credential_id in requirements.all_declared:
+        try:
+            spec = credentials.CATALOGUE.get(credential_id)
+        except UnknownCredentialError:
+            drift.append(credential_id)
+            continue
+        entries.append(
+            {
+                "credential_id": str(spec.credential_id),
+                "provider": spec.provider,
+                "display_name": spec.display_name,
+                "signup_url": spec.signup_url,
+                "degrades_only": credential_id in requirements.optional_credentials,
+                # Funding and registration both key on a client, so neither is
+                # knowable here. Named rather than defaulted.
+                "client_scoped": True,
+            }
+        )
+    payload["credentials"] = entries
+    if drift:
+        payload["catalogue_drift"] = sorted(drift)
+    return payload
+
+
 def credential_status(
     workflow: str,
     client_context: dict[str, Any] | None,
@@ -971,6 +1031,19 @@ def credential_status(
     """
     context = client_context or {}
     require_visible(workflow, scope)
+
+    if scope.unrestricted and not context.get("client_slug"):
+        # `client_context` is typed optional and this is the one caller for
+        # which that is meaningful: an operator asking what a workflow SPENDS,
+        # before any client is in the picture. `require_client` rightly refuses
+        # to invent an owner -- it decides whose brand a deliverable ships in --
+        # but that refusal belongs to the run path, and borrowing it here turned
+        # a documented optional argument into an unconditional PermissionError
+        # for exactly the caller the signature invites. So answer the half that
+        # can be answered without an owner, and name the missing half rather
+        # than implying the client has nothing to do.
+        return _workflow_level_credential_summary(workflow)
+
     client_slug = require_client(scope, context.get("client_slug"))
     require_entitled(workflow, client_slug, scope)
 
