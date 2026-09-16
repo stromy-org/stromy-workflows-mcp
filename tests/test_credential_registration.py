@@ -59,7 +59,10 @@ def declared(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _mint(scope: CallerScope, credential_id: str = "openai-api", **kwargs: Any) -> dict[str, Any]:
     return service.create_credential_registration_link(
-        WORKFLOW, credential_id, kwargs.pop("client_context", {"client_slug": "stromy"}), scope,
+        WORKFLOW,
+        credential_id,
+        kwargs.pop("client_context", {"client_slug": "stromy"}),
+        scope,
         **kwargs,
     )
 
@@ -208,10 +211,55 @@ def test_scrub_list_covers_every_alias_including_the_duplicates() -> None:
 
 
 def test_every_spec_declares_a_probe_and_a_signup_url() -> None:
-    """A spec with no probe stores unverified; one with no signup url strands a user."""
+    """A spec with no probe stores unverified; one with no signup url strands a user.
+
+    `UNPROBED` is the declared exception, not a hole: see its rationale in
+    `credentials.py`. A signup url has no such exception — a user sent to
+    register a key with nowhere to create one is stranded regardless of funding.
+    """
     for spec in credentials.CATALOGUE:
-        assert spec.probe is not None, f"{spec.credential_id} has no validator"
+        if str(spec.credential_id) not in credentials.UNPROBED:
+            assert spec.probe is not None, f"{spec.credential_id} has no validator"
         assert spec.signup_url, f"{spec.credential_id} has no signup url"
+
+
+def test_the_unprobed_list_cannot_rot() -> None:
+    """NEGATIVE CONTROL: an entry for a credential that no longer exists, or one
+    that has since GAINED a probe, is a stale exemption quietly widening the
+    hole for whatever is added next."""
+    known = {str(spec.credential_id) for spec in credentials.CATALOGUE}
+    assert credentials.UNPROBED <= known, "UNPROBED names a credential not in the catalogue"
+    for credential_id in credentials.UNPROBED:
+        assert credentials.CATALOGUE.get(credential_id).probe is None, (
+            f"{credential_id} now has a probe — remove it from UNPROBED"
+        )
+
+
+def test_an_unprobed_credential_is_never_client_funded() -> None:
+    """The exemption's whole safety argument, asserted against the SHIPPED file.
+
+    Storing a key unverified is tolerable only while no client is ever asked to
+    provide one. That is a commercial fact living in the entitlement registry,
+    so it is checked there — this reddens the day somebody flips one of these
+    six to client-funded without first measuring the provider's auth contract
+    and adding a real probe.
+    """
+    import json
+    from pathlib import Path
+
+    from stromy_workflows_mcp.contracts import load_contract
+    from stromy_workflows_mcp.entitlements import POLICY_CLIENT, _parse, entitlements_path
+
+    table = _parse(json.loads(Path(entitlements_path()).read_text()))
+    for workflow, clients in table.items():
+        declared = load_contract(workflow).requirements.all_declared
+        for slug, decision in clients.items():
+            for credential_id, entry in decision.resolve(declared).items():
+                if credential_id in credentials.UNPROBED:
+                    assert entry.funded_by != POLICY_CLIENT, (
+                        f"{workflow}/{slug} asks the client to register "
+                        f"{credential_id}, which ships with no validator"
+                    )
 
 
 def test_gemini_treats_400_as_a_definitive_rejection() -> None:
@@ -227,7 +275,8 @@ def test_gemini_treats_400_as_a_definitive_rejection() -> None:
 
 def test_no_probe_carries_the_key_in_a_query_string() -> None:
     for spec in credentials.CATALOGUE:
-        assert spec.probe is not None
+        if spec.probe is None:
+            continue
         assert "?" not in spec.probe.url, f"{spec.credential_id} probe URL has a query string"
         assert spec.probe.url.startswith("https://")
 

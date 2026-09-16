@@ -34,8 +34,11 @@ from .dispatch import (
     new_dispatch_id,
 )
 from .entitlements import (
+    DEFAULT_CREDENTIAL_FUNDING,
     POLICY_CLIENT,
+    credential_funding,
     credential_policy,
+    funding_decision,
     require_entitled,
     require_visible,
     visible_workflows,
@@ -152,40 +155,70 @@ def _preflight_credentials(workflow: str, client_slug: str) -> None:
 
     Blocking (Key Vault) — call it through ``asyncio.to_thread``.
     """
-    if credential_policy(workflow, client_slug) != POLICY_CLIENT:
-        return
     requirements = load_contract(workflow).requirements
+    decision = funding_decision(workflow, client_slug)
+
     if not requirements.declared:
         # Undeclared is refused rather than skipped: with no statement of what
-        # the workflow spends there is nothing to inject, so a client-policy run
+        # the workflow spends there is nothing to inject, so a client-funded run
         # would proceed on ambient operator keys — the silent fall-through this
-        # whole plane exists to close.
-        raise CredentialsNotReady(
-            f"workflow {workflow!r} declares no credential requirements yet, so a "
-            "client-funded run cannot be started against it"
-        )
-    store = credentials.credential_store()
-    if isinstance(store, NullCredentialStore):
+        # whole plane exists to close. Asked BEFORE the funding map is resolved,
+        # because resolving against an empty declared set answers "nothing is
+        # client-funded" for every pair — which would turn the refusal into a
+        # silent pass exactly when it matters most.
+        if decision.intends_client_funding():
+            raise CredentialsNotReady(
+                f"workflow {workflow!r} declares no credential requirements yet, so a "
+                "client-funded run cannot be started against it"
+            )
         return
-    subject = Subject(SubjectKind.CLIENT_SLUG, client_slug)
-    outstanding: list[str] = []
+
+    funding = decision.resolve(requirements.all_declared)
+
+    # Catalogue drift is fatal for EVERY required credential, whoever funds it —
+    # checked before the funding filter, not inside it. An id this catalogue
+    # cannot resolve has no env aliases we can name, so an operator-funded one
+    # is just as unusable: the runner could not assert it holds the key, and the
+    # scrub could not protect it. Filtering first would have made an unknown id
+    # default quietly to "operator" and vanish.
     for credential_id in requirements.required:
         try:
-            spec = credentials.CATALOGUE.get(credential_id)
+            credentials.CATALOGUE.get(credential_id)
         except UnknownCredentialError:
-            # Drift is fatal here, unlike in the status surface: status reports
-            # so an operator can see it, but a run naming a credential nobody can
+            # Fatal here, unlike in the status surface: status reports so an
+            # operator can see it, but a run naming a credential nobody can
             # register is a run that cannot be funded at all.
             raise CredentialsNotReady(
                 f"workflow {workflow!r} requires credential {credential_id!r}, which "
                 "this server's catalogue does not know. This is an operator "
                 "problem, not something to register."
             ) from None
+
+    # ONLY the required, client-funded ones are the client's to register. An
+    # operator-funded credential is not an outstanding action against a bill
+    # they do not owe, and an OPTIONAL one is not a blocker either: its absence
+    # degrades the run, which is recorded on the run rather than refused before
+    # it starts.
+    owed = [
+        credential_id
+        for credential_id in requirements.required
+        if credential_id in funding and funding[credential_id].funded_by == POLICY_CLIENT
+    ]
+    if not owed:
+        return
+
+    store = credentials.credential_store()
+    if isinstance(store, NullCredentialStore):
+        return
+    subject = Subject(SubjectKind.CLIENT_SLUG, client_slug)
+    outstanding: list[str] = []
+    for credential_id in owed:
+        spec = credentials.CATALOGUE.get(credential_id)
         if not store.exists(spec.credential_id, subject):
             outstanding.append(str(spec.credential_id))
     if outstanding:
         raise CredentialsNotReady(
-            f"this workflow spends {len(requirements.required)} credential(s) and "
+            f"this workflow spends {len(owed)} client-funded credential(s) and "
             "resolves ALL of them before it starts, so it cannot run until every "
             f"one is registered. Still outstanding: {', '.join(outstanding)}. "
             "Mint a registration link per outstanding credential "
@@ -216,9 +249,17 @@ def _execution_snapshot(workflow: str, client_slug: str) -> dict[str, Any] | Non
     requirements = load_contract(workflow).requirements
     if not requirements.declared:
         return None
+    funding = credential_funding(workflow, client_slug, requirements.all_declared)
     return {
-        "credential_policy": credential_policy(workflow, client_slug),
+        "credential_policy": credential_policy(workflow, client_slug, requirements.all_declared),
+        # The per-credential decision, pinned with everything else. Immutability
+        # matters more here than for the coarse policy: a registry edit between
+        # a failure and its retry could otherwise move who pays for ONE
+        # credential of the retry, which is harder to notice than the whole run
+        # changing hands.
+        "funding": {cid: entry.funded_by for cid, entry in funding.items()},
         "credentials": list(requirements.credentials),
+        "optional_credentials": list(requirements.optional_credentials),
         "resolved_credentials": list(requirements.resolved_credentials),
         # The semantic requirements travel too, so the runner can re-derive the
         # concrete list against ITS models.yaml and notice a disagreement. A
@@ -479,6 +520,7 @@ async def retry_run(
     A fresh job template is rendered rather than the parent's replayed: the template
     embeds the run id, and this attempt has a new one.
     """
+
     def _authorize() -> registry.Run:
         with registry.connect() as conn:
             parent = _require_run_scope(registry.get_run(conn, run_id), scope)
@@ -603,8 +645,7 @@ def _validate_resume_payload(payload: Any) -> None:
     size = len(encoded.encode("utf-8"))
     if size > MAX_RESUME_PAYLOAD_BYTES:
         raise ConfigRejected(
-            f"resume_payload is {size} bytes, above the "
-            f"{MAX_RESUME_PAYLOAD_BYTES}-byte ceiling",
+            f"resume_payload is {size} bytes, above the {MAX_RESUME_PAYLOAD_BYTES}-byte ceiling",
             code="resume_payload_too_large",
         )
 
@@ -642,9 +683,7 @@ async def resume_run(
 
     resumed, template = await asyncio.to_thread(_request)
     try:
-        await dispatcher.dispatch(
-            run_id=run_id, dispatch_id=dispatch_id or "", template=template
-        )
+        await dispatcher.dispatch(run_id=run_id, dispatch_id=dispatch_id or "", template=template)
     except JobStartError as exc:
         await asyncio.to_thread(_mark_failed, run_id, str(exc))
         raise
@@ -724,9 +763,7 @@ def create_input_session(
     if any(item.content_bytes is None for item in accepted):
         # The raw token exists only in this response. It is not stored, not
         # logged, and cannot be re-derived from the row.
-        payload["upload_url"] = (
-            f"{_public_base_url()}/uploads/{session.session_id}?t={token}"
-        )
+        payload["upload_url"] = f"{_public_base_url()}/uploads/{session.session_id}?t={token}"
         payload["expires_in_seconds"] = SESSION_TTL_SECONDS
     return payload
 
@@ -895,17 +932,24 @@ def credential_status(
 
     contract = load_contract(workflow)
     requirements = contract.requirements
-    policy = credential_policy(workflow, client_slug)
+    funding = credential_funding(workflow, client_slug, requirements.all_declared)
+    policy = credential_policy(workflow, client_slug, requirements.all_declared)
     payload: dict[str, Any] = {
         "workflow": workflow,
         "client_slug": client_slug,
-        # Whose keys this client's runs spend. On `operator` the client owes
-        # nothing — reporting an unregistered credential without this would read
-        # as an outstanding action when there is none.
+        # The COARSE answer, kept because a reader's first question is "do I owe
+        # anything at all". Per-credential detail is on each entry below.
         "credential_policy": policy,
         "declared": requirements.declared,
         "credentials": [],
     }
+    # Credentials nobody has decided about. Named separately rather than left to
+    # be spotted entry by entry: a default is a safe starting state only while
+    # it stays visible, and the failure this whole plan removes is funding that
+    # nobody can see.
+    defaulted = sorted(cid for cid, entry in funding.items() if not entry.decided)
+    if defaulted:
+        payload["funding_defaults"] = defaulted
     if not requirements.declared:
         payload["note"] = (
             "This workflow has not declared its credential requirements yet, so "
@@ -919,7 +963,7 @@ def credential_status(
     subject = Subject(SubjectKind.CLIENT_SLUG, client_slug)
     drift: list[str] = []
     entries: list[dict[str, Any]] = []
-    for credential_id in requirements.required:
+    for credential_id in requirements.all_declared:
         try:
             spec = credentials.CATALOGUE.get(credential_id)
         except UnknownCredentialError:
@@ -928,12 +972,27 @@ def credential_status(
             # call that dies on it hides every other credential's real state.
             drift.append(credential_id)
             continue
+        decision = funding.get(credential_id)
+        funded_by = decision.funded_by if decision else DEFAULT_CREDENTIAL_FUNDING
         entry: dict[str, Any] = {
             "credential_id": str(spec.credential_id),
             "provider": spec.provider,
             "display_name": spec.display_name,
             "signup_url": spec.signup_url,
+            "funded_by": funded_by,
+            "funding_decided": bool(decision and decision.decided),
+            # Optional means the run continues without it and says so, never
+            # that nobody is told.
+            "degrades_only": credential_id in requirements.optional_credentials,
         }
+        if funded_by != POLICY_CLIENT:
+            # Stromy pays for this one, so the client has nothing to do. Reading
+            # the vault and reporting `not_registered` would render as an
+            # outstanding action against a bill they do not owe — the same
+            # mistake `credential_policy` was added to prevent, one level down.
+            entry["status"] = "not_required"
+            entries.append(entry)
+            continue
         if not provisioned:
             entry["status"] = "unavailable"
         else:

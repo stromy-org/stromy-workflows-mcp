@@ -125,8 +125,102 @@ CATALOGUE = CredentialCatalogue(
                 header="X-API-KEY",
             ),
         ),
+        # --- evidence-channel credentials (ORG-PLAN-300) ----------------------
+        #
+        # These six fund the sourcing and extraction channels. They are here not
+        # because a client is expected to register them — every shipped pairing
+        # funds them from the operator's own keys — but because THE SCRUB LIST IS
+        # DERIVED FROM THIS CATALOGUE. A key outside it cannot be scrubbed, so a
+        # client-funded run would leave the operator's copy live in the
+        # environment: the exact silent-operator-spend path this plane exists to
+        # close, and the state all six were in until now.
+        #
+        # No `probe` on any of them, deliberately. A probe validates a key at
+        # registration, and every one of these providers wants a POST or an
+        # endpoint shape this GET-style probe cannot express. An unvalidated
+        # registration is a smaller harm than a probe that reports a working key
+        # as broken; add one per provider when its real contract is measured.
+        CredentialSpec(
+            credential_id=CredentialId("serper-api"),
+            provider="Serper",
+            owner=CredentialOwner.CALLER_BYOK,
+            env_aliases=("SERPER_API_KEY",),
+            display_name="Serper API key",
+            signup_url="https://serper.dev/signup",
+        ),
+        CredentialSpec(
+            credential_id=CredentialId("tavily-api"),
+            provider="Tavily",
+            owner=CredentialOwner.CALLER_BYOK,
+            env_aliases=("TAVILY_API_KEY",),
+            display_name="Tavily API key",
+            signup_url="https://app.tavily.com/home",
+        ),
+        CredentialSpec(
+            credential_id=CredentialId("core-api"),
+            provider="CORE",
+            owner=CredentialOwner.CALLER_BYOK,
+            env_aliases=("CORE_API_KEY",),
+            display_name="CORE API key",
+            signup_url="https://core.ac.uk/services/api",
+        ),
+        CredentialSpec(
+            credential_id=CredentialId("mediacloud-api"),
+            provider="MediaCloud",
+            owner=CredentialOwner.CALLER_BYOK,
+            env_aliases=("MEDIACLOUD_API_KEY",),
+            display_name="MediaCloud API key",
+            signup_url="https://search.mediacloud.org/",
+        ),
+        CredentialSpec(
+            credential_id=CredentialId("world-news-api"),
+            provider="World News API",
+            owner=CredentialOwner.CALLER_BYOK,
+            env_aliases=("WORLD_NEWS_API_KEY",),
+            display_name="World News API key",
+            signup_url="https://worldnewsapi.com/",
+        ),
+        CredentialSpec(
+            credential_id=CredentialId("jina-api"),
+            provider="Jina",
+            owner=CredentialOwner.CALLER_BYOK,
+            env_aliases=("JINA_API_KEY",),
+            display_name="Jina API key",
+            signup_url="https://jina.ai/reader/",
+        ),
     ]
 )
+
+#: Specs that ship WITHOUT a provider probe, and why (ORG-PLAN-300).
+#:
+#: A probe validates a key the moment a client registers it; without one the
+#: service stores whatever it was given and the mistake surfaces later, inside a
+#: run. That is a real cost, so the exemption is an explicit list rather than a
+#: quiet `probe=None`.
+#:
+#: All six are evidence-channel providers whose authenticated endpoints do not
+#: fit this probe model — they want a POST body, or carry the key in a query
+#: string, which `ProviderProbe` deliberately cannot express (a key in a URL
+#: lands in every proxy log). Inventing an endpoint would be worse than storing
+#: unverified: a probe pointed at the wrong URL reports a WORKING key as broken,
+#: and the client has no way to argue with it.
+#:
+#: The exemption is safe only while nobody is asked to register these, which is
+#: a COMMERCIAL fact, not a technical one — so `test_an_unprobed_credential_is_
+#: never_client_funded` asserts exactly that against the shipped registry, and
+#: reddens the day one of them is flipped to client-funded. Fix by measuring the
+#: provider's real auth contract and adding a probe, never by widening this list.
+UNPROBED = frozenset(
+    {
+        "serper-api",
+        "tavily-api",
+        "core-api",
+        "mediacloud-api",
+        "world-news-api",
+        "jina-api",
+    }
+)
+
 
 #: In-memory on purpose. A restart drops pending grants, which is the correct
 #: behaviour — mint a fresh link — and keeps a credential-binding capability out

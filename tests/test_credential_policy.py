@@ -14,41 +14,150 @@ import pytest
 
 from stromy_workflows_mcp.entitlements import (
     CREDENTIAL_POLICIES,
+    DEFAULT_CREDENTIAL_FUNDING,
     DEFAULT_CREDENTIAL_POLICY,
     POLICY_CLIENT,
     POLICY_OPERATOR,
     EntitlementError,
+    FundingDecision,
     _parse,
+    credential_funding,
     credential_policy,
     entitled_clients,
     entitlements_path,
 )
 
+#: A declared set to resolve synthetic decisions against. Funding is meaningless
+#: until it meets the credentials a workflow actually spends.
+DECLARED = ("openai-api", "serper-api")
 
-def _table(clients: object, workflow: str = "wf") -> dict[str, dict[str, str]]:
+
+def _table(clients: object, workflow: str = "wf") -> dict[str, dict[str, FundingDecision]]:
     return _parse({"workflows": {workflow: {"clients": clients}}})
+
+
+def _funders(clients: object, slug: str = "alpha", declared: object = DECLARED) -> dict[str, str]:
+    """Effective funder per credential, dropping the decided flag."""
+    resolved = _table(clients)["wf"][slug].resolve(declared)
+    return {cid: entry.funded_by for cid, entry in resolved.items()}
 
 
 # --- v2: the object form carries the commercial fact -------------------------
 
 
 def test_v2_object_form_reads_explicit_policies() -> None:
-    table = _table(
-        {
-            "alpha": {"credential_policy": POLICY_CLIENT},
-            "beta": {"credential_policy": POLICY_OPERATOR},
-        }
-    )
-    assert table["wf"] == {"alpha": POLICY_CLIENT, "beta": POLICY_OPERATOR}
+    """The scalar shorthand still means "every declared credential on this policy"."""
+    clients = {
+        "alpha": {"credential_policy": POLICY_CLIENT},
+        "beta": {"credential_policy": POLICY_OPERATOR},
+    }
+    assert _funders(clients, "alpha") == dict.fromkeys(DECLARED, POLICY_CLIENT)
+    assert _funders(clients, "beta") == dict.fromkeys(DECLARED, POLICY_OPERATOR)
 
 
 def test_v2_entry_without_a_policy_defaults_to_operator() -> None:
-    assert _table({"alpha": {}})["wf"] == {"alpha": DEFAULT_CREDENTIAL_POLICY}
+    assert _funders({"alpha": {}}) == dict.fromkeys(DECLARED, DEFAULT_CREDENTIAL_FUNDING)
 
 
 def test_v2_null_client_config_defaults_to_operator() -> None:
     """`"alpha": null` is a grant with nothing said about billing, not a broken entry."""
-    assert _table({"alpha": None})["wf"] == {"alpha": DEFAULT_CREDENTIAL_POLICY}
+    assert _funders({"alpha": None}) == dict.fromkeys(DECLARED, DEFAULT_CREDENTIAL_FUNDING)
+
+
+# --- Per-credential funding (ORG-PLAN-300) -----------------------------------
+
+
+def test_funding_map_decides_each_credential_independently() -> None:
+    """The shape the whole plan exists for: the client pays for the model, we
+    pay for the flat-rate search subscription."""
+    clients = {"alpha": {"funding": {"openai-api": "client", "serper-api": "operator"}}}
+    assert _funders(clients) == {"openai-api": POLICY_CLIENT, "serper-api": POLICY_OPERATOR}
+
+
+def test_a_credential_absent_from_the_map_defaults_and_says_so() -> None:
+    """The default must not block a first deployment — and must not hide either.
+
+    `decided` is the whole reason a default is acceptable here: lending our key
+    is the right starting state, but a funding answer nobody chose has to be
+    distinguishable from one somebody did.
+    """
+    resolved = _table({"alpha": {"funding": {"openai-api": "client"}}})["wf"]["alpha"].resolve(
+        DECLARED
+    )
+    assert (resolved["openai-api"].funded_by, resolved["openai-api"].decided) == (
+        POLICY_CLIENT,
+        True,
+    )
+    assert (resolved["serper-api"].funded_by, resolved["serper-api"].decided) == (
+        DEFAULT_CREDENTIAL_FUNDING,
+        False,
+    )
+
+
+def test_an_explicit_operator_decision_is_not_a_default() -> None:
+    """NEGATIVE CONTROL for `decided`: if it were computed from the VALUE rather
+    than from presence, an explicit "we pay" would be indistinguishable from
+    nobody having decided — and the operator report of undecided credentials
+    would quietly list every deliberate choice."""
+    resolved = _table({"alpha": {"funding": {"serper-api": "operator"}}})["wf"]["alpha"].resolve(
+        DECLARED
+    )
+    assert (resolved["serper-api"].funded_by, resolved["serper-api"].decided) == (
+        POLICY_OPERATOR,
+        True,
+    )
+    assert (resolved["openai-api"].funded_by, resolved["openai-api"].decided) == (
+        POLICY_OPERATOR,
+        False,
+    )
+
+
+def test_declaring_both_shapes_is_refused() -> None:
+    """Two statements of one answer that can disagree. Resolving by precedence
+    would make the billing answer depend on which field a reader consulted."""
+    with pytest.raises(EntitlementError, match="BOTH"):
+        _table({"alpha": {"credential_policy": POLICY_CLIENT, "funding": {"openai-api": "client"}}})
+
+
+def test_an_unknown_funding_value_is_refused() -> None:
+    """Same mutation as the scalar's typo guard, at per-credential granularity."""
+    with pytest.raises(EntitlementError, match="serper-api"):
+        _table({"alpha": {"funding": {"serper-api": "operatr"}}})
+
+
+def test_a_non_object_funding_is_refused() -> None:
+    with pytest.raises(EntitlementError, match="non-object 'funding'"):
+        _table({"alpha": {"funding": ["openai-api"]}})
+
+
+def test_funding_keys_outside_the_declared_set_are_reported() -> None:
+    """A decision written against the wrong workflow looks exactly like one that
+    took effect. `check_entitlements.py` turns this into a CI failure."""
+    decision = _table({"alpha": {"funding": {"openai-api": "client", "ghost-api": "client"}}})[
+        "wf"
+    ]["alpha"]
+    assert decision.undeclared_keys(DECLARED) == ("ghost-api",)
+    assert decision.undeclared_keys(("openai-api", "ghost-api")) == ()
+
+
+def test_coarse_policy_is_client_when_any_credential_is(monkeypatch) -> None:
+    """One client-funded credential makes this a client-funded RUN.
+
+    The surfaces that ask a yes/no question — does this need a scrub, does the
+    client owe a registration — must not answer "operator" for a mixed pair just
+    because most of it is operator-funded.
+    """
+    clients = {"alpha": {"funding": {"openai-api": "client", "serper-api": "operator"}}}
+    monkeypatch.setattr(
+        "stromy_workflows_mcp.entitlements.load_entitlements", lambda: _table(clients)
+    )
+    assert credential_policy("wf", "alpha", DECLARED) == POLICY_CLIENT
+    # NEGATIVE CONTROL: all-operator must NOT read as client.
+    operator_only = {"alpha": {"funding": {"openai-api": "operator"}}}
+    monkeypatch.setattr(
+        "stromy_workflows_mcp.entitlements.load_entitlements", lambda: _table(operator_only)
+    )
+    assert credential_policy("wf", "alpha", DECLARED) == POLICY_OPERATOR
 
 
 # --- v1 compatibility: the window where registry and code disagree -----------
@@ -61,10 +170,12 @@ def test_v1_list_form_still_parses_as_every_slug_on_the_default() -> None:
     catalogue would deny at once during the rollout window — an outage caused by
     a migration that changes nobody's billing.
     """
-    assert _table(["alpha", "beta"])["wf"] == {
-        "alpha": DEFAULT_CREDENTIAL_POLICY,
-        "beta": DEFAULT_CREDENTIAL_POLICY,
-    }
+    assert _funders(["alpha", "beta"], "alpha") == dict.fromkeys(
+        DECLARED, DEFAULT_CREDENTIAL_FUNDING
+    )
+    assert _funders(["alpha", "beta"], "beta") == dict.fromkeys(
+        DECLARED, DEFAULT_CREDENTIAL_FUNDING
+    )
 
 
 def test_v1_and_v2_agree_on_who_is_entitled() -> None:
@@ -121,17 +232,27 @@ def test_credential_policy_defaults_for_an_unknown_pairing(monkeypatch) -> None:
     """
     monkeypatch.setattr(
         "stromy_workflows_mcp.entitlements.load_entitlements",
-        lambda: {"wf": {"alpha": POLICY_CLIENT}},
+        lambda: {"wf": {"alpha": FundingDecision(shorthand=POLICY_CLIENT)}},
     )
-    assert credential_policy("wf", "alpha") == POLICY_CLIENT
-    assert credential_policy("wf", "nobody") == DEFAULT_CREDENTIAL_POLICY
-    assert credential_policy("missing", "alpha") == DEFAULT_CREDENTIAL_POLICY
+    assert credential_policy("wf", "alpha", DECLARED) == POLICY_CLIENT
+    assert credential_policy("wf", "nobody", DECLARED) == DEFAULT_CREDENTIAL_POLICY
+    assert credential_policy("missing", "alpha", DECLARED) == DEFAULT_CREDENTIAL_POLICY
+    # And the per-credential surface agrees with the coarse one.
+    assert all(
+        entry.funded_by == POLICY_CLIENT
+        for entry in credential_funding("wf", "alpha", DECLARED).values()
+    )
 
 
 def test_entitled_clients_reads_the_object_form(monkeypatch) -> None:
     monkeypatch.setattr(
         "stromy_workflows_mcp.entitlements.load_entitlements",
-        lambda: {"wf": {"alpha": POLICY_CLIENT, "beta": POLICY_OPERATOR}},
+        lambda: {
+            "wf": {
+                "alpha": FundingDecision(shorthand=POLICY_CLIENT),
+                "beta": FundingDecision(shorthand=POLICY_OPERATOR),
+            }
+        },
     )
     assert entitled_clients("wf") == frozenset({"alpha", "beta"})
 
@@ -143,6 +264,14 @@ def test_entitled_clients_reads_the_object_form(monkeypatch) -> None:
 #: self-client dogfooding surface — so moving it costs no external party
 #: anything, which is exactly why the C6 end-to-end proof runs there.
 SELF_CLIENT = "stromy"
+
+
+def _declared_for(workflow: str) -> tuple[str, ...]:
+    """Every credential the shipped contract says this workflow spends."""
+    from stromy_workflows_mcp.contracts import load_contract
+
+    requirements = load_contract(workflow).requirements
+    return tuple(requirements.all_declared)
 
 
 def test_shipped_registry_bills_no_external_client_without_a_decision() -> None:
@@ -169,14 +298,20 @@ def test_shipped_registry_bills_no_external_client_without_a_decision() -> None:
     table = _parse(raw)
     assert table, "the shipped registry parsed to nothing"
     for workflow, clients in table.items():
-        for slug, policy in clients.items():
+        declared = _declared_for(workflow)
+        for slug, decision in clients.items():
             if slug == SELF_CLIENT:
                 continue
-            assert policy == POLICY_OPERATOR, (
-                f"{workflow}/{slug} ships on {policy!r}. Moving an external "
-                "client onto client-funded billing is a commercial act taken "
-                "with that client, not a code change — if this is deliberate, "
-                "say so here and in the registry's note."
+            billed = sorted(
+                cid
+                for cid, entry in decision.resolve(declared).items()
+                if entry.funded_by == POLICY_CLIENT
+            )
+            assert not billed, (
+                f"{workflow}/{slug} ships billing {billed} to the client. Moving "
+                "an external client onto client-funded billing is a commercial "
+                "act taken with that client, not a code change — if this is "
+                "deliberate, say so here and in the registry's note."
             )
 
 
@@ -191,10 +326,32 @@ def test_the_self_client_is_the_one_pair_proving_the_client_path() -> None:
     on_client = {
         (workflow, slug)
         for workflow, clients in table.items()
-        for slug, policy in clients.items()
-        if policy == POLICY_CLIENT
+        for slug, decision in clients.items()
+        if any(
+            entry.funded_by == POLICY_CLIENT
+            for entry in decision.resolve(_declared_for(workflow)).values()
+        )
     }
     assert on_client == {("stakeholder_analysis_workflow", SELF_CLIENT)}
+
+
+def test_the_self_client_still_lets_the_operator_fund_the_subscriptions() -> None:
+    """The mixed case must exist in the SHIPPED file, not only in unit fixtures.
+
+    Without a real pair spending both wallets in one run, nothing exercises the
+    scrub carve-out end to end and `scrub_except` is dead code in production.
+    """
+    table = _parse(json.loads(Path(entitlements_path()).read_text()))
+    decision = table["stakeholder_analysis_workflow"][SELF_CLIENT]
+    resolved = decision.resolve(_declared_for("stakeholder_analysis_workflow"))
+    funders = {entry.funded_by for entry in resolved.values()}
+    assert funders == {POLICY_CLIENT, POLICY_OPERATOR}, (
+        "the self-client pair no longer spends both wallets, so no shipped run "
+        f"exercises mixed funding (funders={sorted(funders)})"
+    )
+    assert all(entry.decided for entry in resolved.values()), (
+        "every credential the proof pair spends must be a decision, not a default"
+    )
 
 
 def test_shipped_registry_uses_the_object_form() -> None:

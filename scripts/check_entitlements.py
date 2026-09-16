@@ -61,14 +61,27 @@ def main() -> int:
             problems.append(str(exc))
             continue
         problems.extend(
-            adapter_problems(
-                workflow, contract.schema, has_clients=bool(table[workflow])
-            )
+            adapter_problems(workflow, contract.schema, has_clients=bool(table[workflow]))
         )
         adapters[workflow] = (
             contract.schema.get("x-input-adapter"),
             contract.schema.get("x-artifact-adapter"),
         )
+
+        # Every funding decision must name a credential this workflow actually
+        # spends. A key that matches nothing is a decision written against the
+        # wrong workflow — and it fails SILENTLY: it looks exactly like a
+        # decision that took effect, while the credential it meant to cover goes
+        # on quietly defaulting.
+        declared = contract.requirements.all_declared
+        for slug, decision in sorted(table[workflow].items()):
+            stray = decision.undeclared_keys(declared)
+            if stray:
+                problems.append(
+                    f"entitlement entry {workflow!r} client {slug!r} funds "
+                    f"{', '.join(stray)}, which this workflow does not spend. "
+                    f"It declares: {', '.join(declared) or '(nothing)'}."
+                )
 
     if problems:
         print(f"FAIL  workflow entitlements ({len(problems)} problem(s))")
@@ -84,6 +97,24 @@ def main() -> int:
             f"      {workflow}: {', '.join(clients) if clients else '(operator-only)'} "
             f"[in={inbound} out={outbound}]"
         )
+        # Funding is printed, always — including the defaults. An undecided
+        # credential is a legitimate state (we lend the key) but never an
+        # invisible one, and this report is where an operator sees the running
+        # total of what they are absorbing without having priced it.
+        try:
+            declared = load_contract(workflow).requirements.all_declared
+        except ContractError:
+            continue
+        for slug in clients:
+            resolved = table[workflow][slug].resolve(declared)
+            if not resolved:
+                continue
+            billed = sorted(c for c, e in resolved.items() if e.funded_by == "client")
+            defaulted = sorted(c for c, e in resolved.items() if not e.decided)
+            print(
+                f"        {slug}: client-funded={', '.join(billed) or '(none)'}"
+                f" · defaulted-to-operator={', '.join(defaulted) or '(none)'}"
+            )
     return 0
 
 
