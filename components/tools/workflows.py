@@ -33,8 +33,16 @@ async def list_workflows() -> list[dict[str, Any]]:
 async def describe_workflow(name: str) -> dict[str, Any]:
     """Describe one hosted workflow's tiered configuration contract.
 
-    Client callers see tier-1 interview questions and tier-2 defaults. Provider-
-    locked tier-3 keys are visible only to the operator role.
+    Client callers see tier-1 interview questions and tier-2 defaults. Tier-3
+    keys, and the ``pinned`` value on each, are visible only to the operator
+    role.
+
+    ``pinned`` states the provider lock as the CLIENT experiences it, and it is
+    not absolute. A client that supplies any tier-3 key is refused outright with
+    ``tier3_forbidden``; an operator's own value for that key overrides the pin
+    and the run executes with it. So an operator who reads ``pinned: true`` and
+    then watches ``validate_config`` accept ``false`` is seeing the contract
+    work as designed, not a bug — the lock is on the caller class, not the key.
     """
     try:
         return await asyncio.to_thread(service.describe_workflow, name, identity.caller_scope())
@@ -363,7 +371,20 @@ async def retry_run(run_id: str) -> dict[str, Any]:
 
 @tool
 async def cancel_run(run_id: str) -> dict[str, Any]:
-    """Cancel a queued or paused caller-scoped run."""
+    """Cancel a caller-scoped run — including one that is already RUNNING.
+
+    Any non-terminal run is accepted; an already-terminal one is refused and
+    says which state it is in.
+
+    A running run does not stop instantly, and a caller needs to know that
+    because the gap is billed. Cancellation lands by flipping the run's status,
+    which the worker discovers only when its next lease renewal is refused; it
+    then cancels the graph mid-node and exits. So a client-funded run keeps
+    executing — and keeps spending the client's own keys — for up to one
+    lease-renewal interval (``STROMY_LEASE_RENEW_SECONDS``, 120s by default)
+    after this returns. Nothing more is owed meanwhile: the status is already
+    ``cancelled``, and neither a second cancel nor a retry makes it stop sooner.
+    """
     try:
         return await asyncio.to_thread(service.cancel_run, run_id, identity.caller_scope())
     except Exception as exc:
