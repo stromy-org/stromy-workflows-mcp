@@ -329,7 +329,7 @@ class Contract:
 
     def describe(self, role: CallerRole) -> dict[str, Any]:
         keys = [key for key in self.keys.values() if role is CallerRole.OPERATOR or key.tier != 3]
-        return {
+        payload: dict[str, Any] = {
             "workflow": self.workflow,
             "description": self.schema.get("description", ""),
             # Reported beside the config contract, never inside it: these are
@@ -347,6 +347,22 @@ class Contract:
                 for key in sorted(keys, key=lambda item: (item.tier, item.name))
             ],
         }
+        # `pinned` is shown ONLY to an operator, and an operator is also the one
+        # caller `validate` lets past the pin (`project`/`validate` re-apply the
+        # supplied value for a tier-3 key when the role is OPERATOR). Without
+        # saying so, "provider-locked, pinned: X" reads as a lock, and watching
+        # validate_config then accept Y looks like a contract bug -- an operator
+        # agent reported exactly that discrepancy on the ORG-PLAN-300 C9 proof
+        # run and lost a step to it. A client never sees the field at all, so
+        # this note cannot advertise an override to anyone who lacks it.
+        if role is CallerRole.OPERATOR and any(key.tier == 3 for key in self.keys.values()):
+            payload["tier3_note"] = (
+                "`pinned` is the value a CLIENT is locked to. As an operator you "
+                "may override any tier-3 key by submitting it; validate_config "
+                "will accept it. A client submitting one is rejected with "
+                "tier3_forbidden."
+            )
+        return payload
 
     def project(self, effective: dict[str, Any], role: CallerRole) -> dict[str, Any]:
         """Filter a validated config down to what this caller may SEE.
@@ -438,10 +454,27 @@ def contracts_root() -> Path:
 
 def load_contract(workflow: str) -> Contract:
     path = contracts_root() / f"{workflow}.json"
+    if not path.is_file():
+        # A misspelled workflow name is the overwhelmingly common way to get
+        # here, and the answer the caller needs is the valid set -- not this
+        # container's filesystem layout. Letting the OSError through spelled
+        # the absolute in-container path into the tool result, which told the
+        # caller nothing actionable and published an internal path to anyone
+        # whose scope reaches this call.
+        known = list_contracts()
+        raise ContractError(
+            f"unknown workflow {workflow!r}. Known workflows: "
+            f"{', '.join(known) if known else '(none registered)'}"
+        )
     try:
         raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise ContractError(f"cannot load contract {workflow!r}: {exc}") from exc
+        # A contract that exists but cannot be READ is an operator-side defect,
+        # not a caller mistake -- report the filename, never the full path.
+        raise ContractError(
+            f"cannot load contract {workflow!r} ({path.name}): "
+            f"{type(exc).__name__}"
+        ) from exc
     if raw.get("workflow") != workflow:
         raise ContractError(f"contract file {path} declares {raw.get('workflow')!r}")
     props = raw.get("properties")
