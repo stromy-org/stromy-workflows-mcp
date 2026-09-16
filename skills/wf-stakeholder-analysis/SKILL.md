@@ -45,9 +45,17 @@ client's connection.
 
 If a run fails for missing credentials, or the user asks whose account pays for it, see
 **Provider keys: whose account pays** in `wf-guide`. In short: check
-`get_credential_status` first — on `credential_policy: operator` there is nothing for the
-user to connect — and if a key is needed, mint a browser link with
+`get_credential_status` first and read it **per credential** — a `funded_by: operator`
+entry is Stromy's and there is nothing for the user to connect — and if a
+`client`-funded key is genuinely owed, mint a browser link with
 `create_credential_registration_link`. Never accept an API key in the conversation.
+
+This workflow spends the two model keys and, for its sourcing stage, up to six research
+providers (Serper, Tavily, CORE, MediaCloud, World News, Jina). **The six are optional**:
+each one missing closes one research channel and narrows the evidence base, and the run
+completes either way. `get_credential_status` marks them `degrades_only: true`, and a run
+that went without any of them records which in its `degradations`. Report that as thinner
+coverage — never as a failure, and never silently.
 
 ## Where the evidence comes from
 

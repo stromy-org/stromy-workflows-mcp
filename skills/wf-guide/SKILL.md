@@ -179,25 +179,48 @@ the plugin carries the `wf-*` guide and client context but never embeds that con
    as the record. Retry applies only to a failed run: a paused one resumes, and a
    completed one already has its results.
 
+**Read `failure.retryable` before you offer a retry, and say who pays.** `false` with
+`reason: "deterministic-repeat"` means this attempt reproduced the previous one exactly —
+same error, same point in the graph — so another run will fail identically. Do not offer
+it; say what failed and that repeating it changes nothing. `failure.spends` says whose
+provider keys the next attempt would burn: on `"client"` a needless retry costs the user
+money, which is why the advice has to be honest rather than optimistic.
+
+`failure.message` is withheld from a client caller on purpose — an exception's text is
+written for whoever debugs it. What you get is `stage` (where it died), `error_type`,
+`retryable` and `correlation_id`. **Quote the correlation id** when reporting a failure:
+it is the handle that lets Stromy find the actual frames.
+
 A slow first response can be an ordinary scale-from-zero start. A failed status is still
 reported explicitly; the guide never treats silence or a queued run as completion.
 
 ## Provider keys: whose account pays
 
-Most runs spend **Stromy's** provider keys and the user needs to do nothing — that is the
-default and it is what every current client is on. Some arrangements instead run on the
-**client's own** keys, so the model and data-provider costs land on their account.
+**Who pays is decided per credential, not per client.** One workflow can spend the
+client's own model keys while Stromy keeps paying for the search and research providers
+underneath it — and that split is normal, not an edge case. So "does this client use their
+own keys?" is the wrong question; the right one is "which of this workflow's credentials
+are theirs?"
 
 Call `get_credential_status` when the user asks who pays, when a run fails for missing
 credentials, or before walking someone through connecting a key. Read the reply in this
 order:
 
-1. **`credential_policy`.** On `operator`, Stromy pays and there is nothing to connect —
-   say so and stop. Only on `client` does an unconnected key mean an outstanding action.
-2. **`status` per credential.** `registered` and `not_registered` mean what they say.
-   **`unavailable` does NOT mean "no key"** — it means the server cannot read registration
-   state at all. Never tell someone they have no key connected on the strength of it;
-   report that the server can't check right now.
+1. **`funded_by` per credential.** On `operator`, Stromy pays and there is nothing to
+   connect — its `status` reads `not_required`, which means exactly that and is never an
+   outstanding action. Only a `client`-funded credential can be owed.
+2. **`status` on the client-funded ones.** `registered` and `not_registered` mean what
+   they say. **`unavailable` does NOT mean "no key"** — it means the server cannot read
+   registration state at all. Never tell someone they have no key connected on the
+   strength of it; report that the server can't check right now.
+3. **`degrades_only: true`** marks a credential the workflow can run without. Missing, it
+   costs breadth — one research channel goes quiet — not the run. Say which channel, and
+   never present it as a blocker.
+
+`funding_defaults` lists credentials nobody has decided about yet; they fall to Stromy so
+the workflow deploys immediately. That is a real default, not a settled arrangement — if
+the user asks what they are paying for, say which entries are deliberate and which are
+still open.
 
 ### Connecting, rotating and disconnecting
 
