@@ -182,11 +182,18 @@ def create_retry(
     new_run_id: str,
     job_template: dict[str, Any],
     image_tag: str | None,
+    config: dict[str, Any] | None = None,
 ) -> Run:
     """Mint the next attempt of a failed run. Lineage rules live in the core.
 
     Named here rather than called as ``core.create_retry`` at the use site for the
     same reason as the rest of this module: one place to see what the facade touches.
+
+    ``config`` REPLACES the inherited configuration in the core rather than merging
+    into it, so the caller must hand over a complete config — which is why
+    ``service.retry_run`` merges the caller's override onto the parent row before it
+    gets here, and why this wrapper does not default it to an empty dict. ``None``
+    means "keep the parent's", which is the ordinary rerun.
     """
     return core.create_retry(
         conn,
@@ -194,6 +201,7 @@ def create_retry(
         new_run_id=new_run_id,
         job_template=job_template,
         image_tag=image_tag,
+        config=config,
     )
 
 

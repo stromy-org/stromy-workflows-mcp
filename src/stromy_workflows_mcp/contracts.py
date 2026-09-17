@@ -447,6 +447,53 @@ class Contract:
             )
         return _unflatten(effective)
 
+    def validate_override(self, override: dict[str, Any], role: CallerRole) -> dict[str, Any]:
+        """Gate a PARTIAL config submitted on top of an existing one.
+
+        ``validate`` is for a whole config and applies its tier-3 gate to every
+        key present, which is exactly wrong for a retry: the parent's stored
+        config legitimately contains the pins the server itself wrote, so
+        validating the merged result would reject a client for tier-3 keys it
+        never submitted. It would also reject the internal markers
+        ``request_resume`` writes, as unknown keys.
+
+        So the tier gate is applied to the OVERRIDE — the only part the caller
+        actually submitted — and the required-tier-1 check is deliberately not,
+        because the parent already satisfied it. Same error codes as
+        ``validate``, so a caller sees one vocabulary either way.
+        """
+
+        flat = _flatten(override)
+        unknown = sorted(set(flat) - set(self.keys))
+        if unknown:
+            raise ConfigRejected(
+                f"unknown config key(s): {', '.join(unknown)}",
+                code="unknown_key",
+                keys=unknown,
+            )
+        locked = sorted(key for key in flat if self.keys[key].tier == 3)
+        if role is CallerRole.CLIENT and locked:
+            raise ConfigRejected(
+                f"tier-3 key(s) are provider-locked: {', '.join(locked)}",
+                code="tier3_forbidden",
+                keys=locked,
+            )
+        # Per-key schema validation, so a bad VALUE is caught here rather than
+        # by the runner an hour later. The whole-document validator cannot be
+        # used on a partial: its ``required`` clause would fire on every key the
+        # override legitimately omits.
+        properties = self.schema.get("properties", {}) if isinstance(self.schema, dict) else {}
+        for name, value in flat.items():
+            subschema = properties.get(name)
+            if not isinstance(subschema, dict):
+                continue
+            errors = sorted(Draft202012Validator(subschema).iter_errors(value), key=str)
+            if errors:
+                raise ConfigRejected(
+                    f"{name}: {errors[0].message}", code="schema_invalid", keys=[name]
+                )
+        return dict(flat)
+
 
 def contracts_root() -> Path:
     return (PROJECT_ROOT / settings.contracts_dir).resolve()
