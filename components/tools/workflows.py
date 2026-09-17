@@ -350,21 +350,43 @@ async def resume_run(run_id: str, resume_payload: Any) -> dict[str, Any]:
 
 
 @tool
-async def retry_run(run_id: str) -> dict[str, Any]:
+async def retry_run(
+    run_id: str,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Start a fresh attempt of a FAILED run, reusing its durable workspace.
 
     Returns a new ``run_id`` — a retry is a new run with new progress and a new
-    checkpoint, linked to the original through ``attempt``. Whatever completed
-    stages already wrote is reused rather than recomputed, so a retry after a
-    late-stage failure is usually much cheaper than starting over.
+    checkpoint, linked to the original through ``attempt``.
 
-    Takes no client context and no config: the owner, the workflow and the
-    configuration all come from the original run. Only a ``failed`` run can be
-    retried — a ``paused`` one resumes (``resume_run``), and a ``completed`` one
-    already has its results (``get_results``).
+    **What carries over is the FOLDER, not the computation.** A retry gets a new
+    graph thread, so the pipeline re-executes from the top; every file the
+    previous attempt wrote is still on the durable share, but a stage will
+    recompute its own output unless it is switched off. So a bare retry of a
+    late-stage failure can cost as much as the original run — measured once at
+    35 minutes of re-sourcing over evidence already present in the workspace.
+
+    ``config`` is what makes it cheap: a PARTIAL override merged onto the
+    original run's configuration. Turn off the stages whose output already
+    exists and the attempt reuses those files and goes straight to the part that
+    failed. For a stakeholder-analysis run that died after its evidence was
+    gathered::
+
+        retry_run(run_id, {"run_orchestrated_sourcing": False,
+                           "run_deep_research": False})
+
+    Omitted keys keep the parent's value, so an override never has to restate
+    the original request. A provider-locked (tier-3) key is refused with
+    ``tier3_forbidden``, the same as at ``start_run``; run ``describe_workflow``
+    to see which tier each key is. Pass nothing to repeat the run exactly.
+
+    Takes no client context: the owner and the workflow come only from the
+    original run, so a retry cannot move a run to another client. Only a
+    ``failed`` run can be retried — a ``paused`` one resumes (``resume_run``),
+    and a ``completed`` one already has its results (``get_results``).
     """
     try:
-        return await service.retry_run(run_id, identity.caller_scope())
+        return await service.retry_run(run_id, identity.caller_scope(), config=config)
     except Exception as exc:
         raise _error(exc) from exc
 

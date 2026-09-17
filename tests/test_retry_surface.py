@@ -11,9 +11,12 @@ Each property below is a way a client could be harmed:
 1. **Entitlement is re-resolved now**, against the original workflow and the run's
    recorded owner. A client whose entitlement was withdrawn must not be able to rerun
    the work it used to be allowed to start.
-2. **Nothing about the attempt comes from the caller** — no client context, no
-   config, no workflow name — so a retry cannot move a run to another client's slug,
-   and a fresh job template is rendered because the template embeds the run id.
+2. **Nothing that decides WHO or WHAT comes from the caller** — no client context,
+   no workflow name — so a retry cannot move a run to another client's slug, and a
+   fresh job template is rendered because the template embeds the run id. A
+   `config` override IS accepted (it is the only way to make a retry cheaper than
+   a fresh run) and is therefore tier-gated exactly as at `start_run`, merged onto
+   the parent rather than substituted for it, and unable to affect ownership.
 3. **A reaped workspace is refused up front.** Retention marks a run before it
    destroys anything, so the facade can say no instead of returning a run id that
    fails minutes later inside a container.
@@ -40,6 +43,9 @@ ATTEMPT = "33333333-3333-3333-3333-333333333333"
 
 OWNER_SCOPE = CallerScope(frozenset({"dukestrategies"}))
 OTHER_SCOPE = CallerScope(frozenset({"someoneelse"}))
+# The tier gate is decided by ROLE, so the override tests need both sides of it.
+CLIENT_SCOPE_FOR_OWNER = CallerScope(frozenset({"dukestrategies"}))
+OPERATOR_SCOPE = CallerScope(frozenset(), unrestricted=True)
 
 
 @pytest.fixture
@@ -222,8 +228,9 @@ async def test_the_attempt_inherits_everything_and_renders_its_own_template(
     assert call["new_run_id"] == ATTEMPT
     assert call["image_tag"] == "sha-def"
     assert call["job_template"] == {"template": {"containers": [{"name": "runner"}]}}
-    # No config override reaches the core from this path at all.
-    assert "config" not in call
+    # Absent an override this stays a pure rerun: the core is told None and so
+    # keeps the parent's config verbatim (it REPLACES when given a value).
+    assert call["config"] is None
 
     assert result["run_id"] == ATTEMPT
     # The lineage has exactly one home in the payload, the same one every other
@@ -236,11 +243,16 @@ async def test_the_attempt_inherits_everything_and_renders_its_own_template(
 async def test_the_retry_signature_offers_no_way_to_redirect_a_run() -> None:
     """Structural, on purpose. A ``client_context`` parameter here would be the one
     place a caller could aim a retry at another client's slug, so the guarantee is
-    the absence of the parameter rather than a check on its value."""
+    the absence of the parameter rather than a check on its value.
+
+    Asserted as the absence of every REDIRECT vector rather than as an exact
+    parameter set: ``config`` was added deliberately (§4) and an exact-set
+    assertion would have failed on it while proving nothing about ownership."""
     import inspect
 
     params = set(inspect.signature(service.retry_run).parameters)
-    assert params == {"run_id", "scope", "job_client", "dispatcher"}
+    assert not params & {"client_context", "client_slug", "workflow", "name", "owner"}
+    assert {"run_id", "scope"} <= params
 
 
 async def test_a_v1_registry_refuses_the_feature_by_name(patched: Any) -> None:
@@ -291,3 +303,131 @@ async def test_a_dispatch_failure_keeps_the_attempt_row(patched: Any) -> None:
             dispatcher=_Dispatcher(raises=RuntimeError("queue unreachable")),
         )
     assert recorded["failures"] == [(ATTEMPT, "queue unreachable")]
+
+
+# --- 4. the config override ---------------------------------------------------
+#
+# Added when `retry_run` gained `config`. A retry inherits the workspace but NOT
+# the computation — the graph re-executes and each stage recomputes unless it is
+# switched off — so this override is the only thing that makes a retry cheaper
+# than a fresh run. It is also the one part of an attempt that now does come
+# from the caller, which is why the tier gate below is load-bearing.
+
+
+async def test_no_override_leaves_the_parent_config_untouched(patched: Any) -> None:
+    """The default stays a pure rerun: create_retry is given no config at all."""
+    recorded = patched(parent=_run())
+    await service.retry_run(PARENT, OWNER_SCOPE, job_client=_JobClient(), dispatcher=_Dispatcher())
+    assert recorded["retries"][0]["config"] is None
+
+
+async def test_an_override_is_MERGED_onto_the_parent_config(patched: Any) -> None:
+    """registry.create_retry REPLACES the config when given one.
+
+    So a bare override would drop the parent's decision_summary and input_set and
+    mint an attempt that cannot run. The facade merges; this is the guard on that.
+    """
+    recorded = patched(
+        parent=_run(
+            config_json={
+                "decision_summary": "the original question",
+                "input_set": "inputset:abc",
+                "run_collector": True,
+            }
+        )
+    )
+    await service.retry_run(
+        PARENT,
+        OWNER_SCOPE,
+        config={"run_collector": False},
+        job_client=_JobClient(),
+        dispatcher=_Dispatcher(),
+    )
+    sent = recorded["retries"][0]["config"]
+    assert sent["run_collector"] is False, "the override must take effect"
+    assert sent["decision_summary"] == "the original question", "inherited keys survive"
+    assert sent["input_set"] == "inputset:abc"
+
+
+async def test_a_client_cannot_smuggle_a_tier3_key_through_a_retry(patched: Any) -> None:
+    """The gate a retry override must not be a way around.
+
+    `run_orchestrated_sourcing` is tier 3 on this contract — provider-locked — so
+    a client submitting it at `start_run` is refused with `tier3_forbidden`. A
+    retry must refuse it identically, or the override becomes the hole.
+    """
+    recorded = patched(parent=_run())
+    with pytest.raises(service.ConfigRejected) as caught:
+        await service.retry_run(
+            PARENT,
+            CLIENT_SCOPE_FOR_OWNER,
+            config={"run_orchestrated_sourcing": False},
+            job_client=_JobClient(),
+            dispatcher=_Dispatcher(),
+        )
+    assert caught.value.code == "tier3_forbidden"
+    assert recorded["retries"] == [], "nothing may be minted after a refusal"
+
+
+async def test_an_operator_may_override_a_tier3_key(patched: Any) -> None:
+    """The mirror of the above, and the case that makes a cheap retry possible."""
+    recorded = patched(parent=_run())
+    await service.retry_run(
+        PARENT,
+        OPERATOR_SCOPE,
+        config={"run_orchestrated_sourcing": False, "run_deep_research": False},
+        job_client=_JobClient(),
+        dispatcher=_Dispatcher(),
+    )
+    sent = recorded["retries"][0]["config"]
+    assert sent["run_orchestrated_sourcing"] is False
+    assert sent["run_deep_research"] is False
+
+
+async def test_an_unknown_override_key_is_refused_before_anything_is_minted(
+    patched: Any,
+) -> None:
+    recorded = patched(parent=_run())
+    with pytest.raises(service.ConfigRejected) as caught:
+        await service.retry_run(
+            PARENT,
+            OPERATOR_SCOPE,
+            config={"run_orchestrated_sourcingg": False},
+            job_client=_JobClient(),
+            dispatcher=_Dispatcher(),
+        )
+    assert caught.value.code == "unknown_key"
+    assert recorded["retries"] == []
+
+
+async def test_a_bad_override_VALUE_is_refused_here_not_in_the_container(
+    patched: Any,
+) -> None:
+    """An hour of graph time is the expensive way to learn a type is wrong."""
+    recorded = patched(parent=_run())
+    with pytest.raises(service.ConfigRejected) as caught:
+        await service.retry_run(
+            PARENT,
+            OPERATOR_SCOPE,
+            config={"report_output_formats": "pdf"},  # array, not a string
+            job_client=_JobClient(),
+            dispatcher=_Dispatcher(),
+        )
+    assert caught.value.code == "schema_invalid"
+    assert recorded["retries"] == []
+
+
+async def test_an_override_cannot_move_the_run_to_another_client(patched: Any) -> None:
+    """Authorization still comes only from the parent row."""
+    recorded = patched(parent=_run())
+    await service.retry_run(
+        PARENT,
+        OPERATOR_SCOPE,
+        config={"brand_slug": "someoneelse"},
+        job_client=_JobClient(),
+        dispatcher=_Dispatcher(),
+    )
+    assert recorded["entitlement_checked"] == (
+        "stakeholder_analysis_workflow",
+        "dukestrategies",
+    )

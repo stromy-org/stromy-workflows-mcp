@@ -509,6 +509,7 @@ def _persist_retry(
     template: dict[str, Any],
     image_tag: str | None,
     dispatch_id: str | None,
+    config: dict[str, Any] | None = None,
 ) -> registry.Run:
     with registry.connect() as conn:
         registry.require_data_plane(registry.schema_version(conn), "retry")
@@ -518,6 +519,7 @@ def _persist_retry(
             new_run_id=new_run_id,
             job_template=template,
             image_tag=image_tag,
+            config=config,
         )
         if dispatch_id is not None:
             registry.set_dispatch(conn, attempt.run_id, dispatch_id)
@@ -549,6 +551,7 @@ async def retry_run(
     run_id: str,
     scope: CallerScope,
     *,
+    config: dict[str, Any] | None = None,
     job_client: JobClient | None = None,
     dispatcher: Dispatcher | None = None,
 ) -> dict[str, Any]:
@@ -563,6 +566,26 @@ async def retry_run(
 
     A fresh job template is rendered rather than the parent's replayed: the template
     embeds the run id, and this attempt has a new one.
+
+    ``config`` is a PARTIAL override merged onto the parent's configuration, and it
+    is what makes a retry cheap rather than merely possible. A retry gets a new
+    LangGraph thread, so the graph re-executes from the top and each stage decides
+    for itself whether to reuse what is already on the durable share — and the only
+    mechanism that makes a stage reuse instead of recompute is the operator turning
+    that stage off. Without this parameter there was no way to say so, so every
+    retry recomputed its whole pipeline: measured on run ``850c4793``,
+    ``run_orchestrated_sourcing`` re-ran for 35m45s over artifacts already sitting
+    in the workspace it had inherited.
+
+    It is merged, never substituted. ``registry.create_retry`` REPLACES the
+    inherited config when given one, so passing a bare override there would drop
+    the parent's ``decision_summary`` and ``input_set`` and start an attempt that
+    cannot run. The tier gate applies to the override alone
+    (``Contract.validate_override``): a client may move its own tier-2 toggles and
+    is refused a tier-3 key with ``tier3_forbidden``, exactly as at ``start_run``,
+    while the pins the server itself wrote onto the parent row pass through
+    untouched. Authorization is unaffected — owner and workflow still come only
+    from the parent.
     """
 
     def _authorize() -> registry.Run:
@@ -573,6 +596,13 @@ async def retry_run(
             return parent
 
     parent = await asyncio.to_thread(_authorize)
+
+    merged_config: dict[str, Any] | None = None
+    if config:
+        # Validated BEFORE `prepare` — the first call that costs anything or
+        # creates state — for the same reason `start_run` validates there.
+        override = load_contract(parent.workflow).validate_override(config, _role(scope))
+        merged_config = {**dict(parent.config_json or {}), **override}
 
     client = job_client or AcaJobClient()
     attempt_id = registry.new_run_id()
@@ -588,6 +618,7 @@ async def retry_run(
         template=prepared.template,
         image_tag=prepared.image_tag,
         dispatch_id=dispatch_id,
+        config=merged_config,
     )
 
     try:
@@ -967,10 +998,19 @@ def _workflow_level_credential_summary(workflow: str) -> dict[str, Any]:
         "client_slug": None,
         "scope": "workflow",
         "declared": requirements.declared,
+        # Present and null, never absent. The tool's own contract tells a caller
+        # to read `ready_to_run` first, and `null` there already means "unknown"
+        # — so omitting the key made an agent reason about a field its
+        # instructions had promised (observed on the 2026-09-16 proof run). The
+        # answer is genuinely unknown here: readiness is a property of a
+        # (workflow, client) pair and no client was named.
+        "ready_to_run": None,
+        "outstanding": None,
         "credentials": [],
         "note": (
             "Operator call with no client_slug: this reports what the workflow "
-            "DECLARES, not what any client has registered. Pass "
+            "DECLARES, not what any client has registered. ready_to_run is null "
+            "because readiness is a property of a (workflow, client) pair. Pass "
             "client_context={'client_slug': '<slug>'} for registration state."
         ),
     }
