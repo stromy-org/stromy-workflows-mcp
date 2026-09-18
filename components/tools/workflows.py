@@ -128,16 +128,25 @@ async def create_input_session(
     ``upload_url``. Declared bytes travel straight to storage — never through
     this server or the model context. Two ways to move them:
 
-    * **Agent-driven, when the bytes are already in your sandbox** (the person
-      attached the file or granted folder access): ``POST
-      <upload_url's path>/urls`` with body ``{"token": "<the t= value>"}`` to
-      mint one short-lived write URL per declared file, then stream each file
-      with ``curl -X PUT -H "x-ms-blob-type: BlockBlob" -H "content-type:
-      <media_type>" --data-binary @<file> "<url>"``. Never re-encode or inline
-      the bytes into a tool call. If the sandbox has no egress to those hosts,
-      fall back to the browser flow.
-    * **Browser, when only the person has the file**: give them the
-      ``upload_url`` — their browser uploads directly to storage.
+    * **Browser — the normal path, and the one to reach for first**: give the
+      person the ``upload_url``; their own browser uploads directly to storage.
+      It is indifferent to any sandbox egress policy, which is exactly what
+      makes it portable across every surface this server serves.
+    * **Agent-driven, ONLY where the sandbox provably has egress to blob
+      storage**: ``POST <upload_url's path>/urls`` with body ``{"token": "<the
+      t= value>"}`` to mint one short-lived write URL per declared file, then
+      stream each with ``curl -X PUT -H "x-ms-blob-type: BlockBlob" -H
+      "content-type: <media_type>" --data-binary @<file> "<url>"``. **Do not
+      assume it does.** Measured inside a Cowork sandbox on 2026-09-17,
+      ``CONNECT <account>.blob.core.windows.net:443`` returns ``403 Forbidden``
+      — refused at the proxy, blanket and not per-host, so no Azure host is
+      reachable. Where egress exists (a local CLI, a self-hosted runner) this
+      rung is the faster one; where it does not, the ``curl`` simply fails and
+      the browser rung above is the answer.
+
+    Never re-encode or inline declared bytes into a tool call. If a binary
+    cannot be moved losslessly, say so and stop — do not recompress to fit a
+    cap.
 
     Accepted types: .md, .txt, .pdf.
 
