@@ -1380,8 +1380,8 @@ wheels = [
 
 [[package]]
 name = "stromy-asset-transport"
-version = "0.7.0"
-source = { git = "https://github.com/stromy-org/asset-transport.git?tag=v0.7.0#0c5e7878e167b1b8fd4739b1172ffa6185016c65" }
+version = "0.8.0"
+source = { git = "https://github.com/stromy-org/asset-transport.git?tag=v0.8.0#850a62523ad56aeeadfd8e3200b9a3bce1aec5ea" }
 
 [[package]]
 name = "stromy-byok"
@@ -1436,7 +1436,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "stromy-asset-transport", git = "https://github.com/stromy-org/asset-transport.git?tag=v0.7.0" },
+    { name = "stromy-asset-transport", git = "https://github.com/stromy-org/asset-transport.git?tag=v0.8.0" },
     { name = "stromy-byok", extras = ["azure"], git = "https://github.com/stromy-org/stromy-byok.git?tag=v0.3.1" },
     { name = "workflow-runtime-core", extras = ["azure-postgres"], git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.11.1" },
 ]
