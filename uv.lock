@@ -1438,7 +1438,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "stromy-asset-transport", git = "https://github.com/stromy-org/asset-transport.git?tag=v0.7.0" },
     { name = "stromy-byok", extras = ["azure"], git = "https://github.com/stromy-org/stromy-byok.git?tag=v0.3.1" },
-    { name = "workflow-runtime-core", extras = ["azure-postgres"], git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.11.1" },
+    { name = "workflow-runtime-core", extras = ["azure-postgres"], git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.12.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1661,8 +1661,8 @@ wheels = [
 
 [[package]]
 name = "workflow-runtime-core"
-version = "0.11.1"
-source = { git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.11.1#c217c53d8b4e61487cc03af72ffa0c9be30d322f" }
+version = "0.12.0"
+source = { git = "https://github.com/stromy-org/workflow-runtime-core.git?tag=v0.12.0#752c6027fe847c64c50b92ce47c761d2c6fc93b5" }
 dependencies = [
     { name = "click" },
     { name = "psycopg", extra = ["binary"] },
